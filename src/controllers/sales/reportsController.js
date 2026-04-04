@@ -51,20 +51,55 @@ class ReportsController {
     
     async getRevenueTrend(req, res) {
         try {
+            // First, check what columns exist in orders table
+            const [columns] = await pool.query(`
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_NAME = 'orders' 
+                AND TABLE_SCHEMA = DATABASE()
+            `);
+            
+            console.log('Orders table columns:', columns);
+            
+            // Check if order_date column exists, if not use created_at
+            let dateColumn = 'order_date';
+            const hasOrderDate = columns.some(col => col.COLUMN_NAME === 'order_date');
+            const hasCreatedAt = columns.some(col => col.COLUMN_NAME === 'created_at');
+            
+            if (!hasOrderDate && hasCreatedAt) {
+                dateColumn = 'created_at';
+            }
+            
+            console.log('Using date column:', dateColumn);
+            
+            // Get revenue trend
             const [revenue] = await pool.query(`
                 SELECT 
-                    DATE_FORMAT(order_date, '%Y-%m') as month,
+                    DATE_FORMAT(${dateColumn}, '%Y-%m') as month,
                     COALESCE(SUM(total_amount), 0) as revenue
                 FROM orders
                 WHERE status != 'Cancelled'
-                GROUP BY DATE_FORMAT(order_date, '%Y-%m')
+                AND ${dateColumn} IS NOT NULL
+                GROUP BY DATE_FORMAT(${dateColumn}, '%Y-%m')
                 ORDER BY month DESC
                 LIMIT 6
             `);
             
+            // If no data, return empty array
+            if (revenue.length === 0) {
+                return res.status(200).json({
+                    success: true,
+                    data: [],
+                    message: 'No order data available'
+                });
+            }
+            
+            // Filter out null months and reverse for chronological order
+            const validData = revenue.filter(r => r.month !== null);
+            
             res.status(200).json({
                 success: true,
-                data: revenue.reverse()
+                data: validData.reverse()
             });
         } catch (error) {
             console.error('Error fetching revenue trend:', error);
@@ -90,7 +125,7 @@ class ReportsController {
                 LEFT JOIN opportunities o ON o.assigned_to = u.id
                 LEFT JOIN orders ord ON ord.sales_rep_id = u.id
                 WHERE u.role IN ('salesperson', 'manager')
-                GROUP BY u.id
+                GROUP BY u.id, u.name
                 ORDER BY revenue DESC
                 LIMIT 5
             `);
@@ -104,6 +139,34 @@ class ReportsController {
             res.status(500).json({
                 success: false,
                 message: 'Error fetching sales leaderboard',
+                error: error.message
+            });
+        }
+    }
+    
+    // New: Get monthly revenue summary
+    async getMonthlyRevenue(req, res) {
+        try {
+            const [revenue] = await pool.query(`
+                SELECT 
+                    DATE_FORMAT(created_at, '%Y-%m') as month,
+                    COALESCE(SUM(total_amount), 0) as revenue,
+                    COUNT(*) as order_count
+                FROM orders
+                WHERE status != 'Cancelled'
+                GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+                ORDER BY month DESC
+            `);
+            
+            res.status(200).json({
+                success: true,
+                data: revenue
+            });
+        } catch (error) {
+            console.error('Error fetching monthly revenue:', error);
+            res.status(500).json({
+                success: false,
+                message: 'Error fetching monthly revenue',
                 error: error.message
             });
         }

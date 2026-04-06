@@ -3,52 +3,7 @@
 class LeadController {
   async createLead(req, res) {
     try {
-      const {
-        company_name,
-        contact_person,
-        phone,
-        email,
-        address,
-        city,
-        state,
-        gst_number,
-        lead_source,
-        priority,
-        expected_close_date,
-        followup_date,
-        notes,
-        assigned_to,
-        products,
-      } = req.body;
-
-      if (!company_name || !phone) {
-        return res.status(400).json({
-          success: false,
-          message: "Company name and phone are required",
-        });
-      }
-
-      // Generate lead ID
-      const [lastLead] = await pool.query(
-        "SELECT lead_id FROM leads ORDER BY id DESC LIMIT 1",
-      );
-      let leadId = "L001";
-      if (lastLead.length > 0) {
-        const num = parseInt(lastLead[0].lead_id.substring(1)) + 1;
-        leadId = "L" + num.toString().padStart(3, "0");
-      }
-
-      const connection = await pool.getConnection();
-      try {
-        await connection.beginTransaction();
-
-        const [result] = await connection.query(
-          `INSERT INTO leads (lead_id, company_name, contact_person, phone, email, address, 
-                        city, state, gst_number, lead_source, priority, expected_close_date, 
-                        followup_date, notes, assigned_to, created_by, status)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'New')`,
-          [
-            leadId,
+        const {
             company_name,
             contact_person,
             phone,
@@ -62,53 +17,150 @@ class LeadController {
             expected_close_date,
             followup_date,
             notes,
-            assigned_to || req.user.id,
-            req.user.id,
-          ],
-        );
+            assigned_to,
+            products,
+        } = req.body;
 
-        // Insert products if any
-        if (products && products.length > 0) {
-          for (const product of products) {
-            await connection.query(
-              `INSERT INTO lead_products (lead_id, product_id, product_name, variant, 
-                                quantity, unit_price, total_price)
-                             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-              [
-                result.insertId,
-                product.product_id || null,
-                product.product_name,
-                product.variant,
-                product.quantity,
-                product.unit_price,
-                product.quantity * product.unit_price,
-              ],
-            );
-          }
+        if (!company_name || !phone) {
+            return res.status(400).json({
+                success: false,
+                message: "Company name and phone are required",
+            });
         }
 
-        await connection.commit();
+        // Generate lead ID
+        const [lastLead] = await pool.query(
+            "SELECT lead_id FROM leads ORDER BY id DESC LIMIT 1",
+        );
+        let leadId = "L001";
+        if (lastLead.length > 0) {
+            const num = parseInt(lastLead[0].lead_id.substring(1)) + 1;
+            leadId = "L" + num.toString().padStart(3, "0");
+        }
 
-        res.status(201).json({
-          success: true,
-          message: "Lead created successfully",
-          data: { lead_id: leadId, id: result.insertId },
-        });
-      } catch (error) {
-        await connection.rollback();
-        throw error;
-      } finally {
-        connection.release();
-      }
+        const connection = await pool.getConnection();
+        try {
+            await connection.beginTransaction();
+
+            const [result] = await connection.query(
+                `INSERT INTO leads (lead_id, company_name, contact_person, phone, email, address, 
+                        city, state, gst_number, lead_source, priority, expected_close_date, 
+                        followup_date, notes, assigned_to, created_by, status)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'New')`,
+                [
+                    leadId,
+                    company_name,
+                    contact_person,
+                    phone,
+                    email,
+                    address,
+                    city,
+                    state,
+                    gst_number,
+                    lead_source,
+                    priority,
+                    expected_close_date,
+                    followup_date,
+                    notes,
+                    assigned_to || req.user.id,
+                    req.user.id,
+                ],
+            );
+
+            // Insert products if any
+            if (products && products.length > 0) {
+                for (const product of products) {
+                    // Validate product_id if provided
+                    let productId = product.product_id || null;
+                    let productName = product.product_name;
+                    let unitPrice = product.unit_price;
+                    
+                    // If product_id is provided, fetch product details from products table
+                    if (productId) {
+                        const [existingProduct] = await connection.query(
+                            "SELECT name, price FROM products WHERE id = ? AND is_active = 1",
+                            [productId]
+                        );
+                        
+                        if (existingProduct.length > 0) {
+                            // Use product name from database if not provided
+                            if (!productName) {
+                                productName = existingProduct[0].name;
+                            }
+                            // Optionally use price from database if unit_price not provided
+                            if (!unitPrice || unitPrice === 0) {
+                                unitPrice = existingProduct[0].price;
+                            }
+                        } else {
+                            // Product ID doesn't exist or is inactive
+                            return res.status(400).json({
+                                success: false,
+                                message: `Product with ID ${productId} not found or inactive`
+                            });
+                        }
+                    }
+                    
+                    // Validate required fields
+                    if (!productName) {
+                        return res.status(400).json({
+                            success: false,
+                            message: "Product name is required for each product"
+                        });
+                    }
+                    
+                    if (!product.quantity || product.quantity <= 0) {
+                        return res.status(400).json({
+                            success: false,
+                            message: "Valid quantity is required for each product"
+                        });
+                    }
+                    
+                    if (!unitPrice || unitPrice <= 0) {
+                        return res.status(400).json({
+                            success: false,
+                            message: "Valid unit price is required for each product"
+                        });
+                    }
+                    
+                    await connection.query(
+                        `INSERT INTO lead_products (lead_id, product_id, product_name, variant, 
+                                            quantity, unit_price, total_price)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                        [
+                            result.insertId,
+                            productId,
+                            productName,
+                            product.variant || null,
+                            product.quantity,
+                            unitPrice,
+                            product.quantity * unitPrice,
+                        ],
+                    );
+                }
+            }
+
+            await connection.commit();
+
+            res.status(201).json({
+                success: true,
+                message: "Lead created successfully",
+                data: { lead_id: leadId, id: result.insertId },
+            });
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            connection.release();
+        }
     } catch (error) {
-      console.error("Error creating lead:", error);
-      res.status(500).json({
-        success: false,
-        message: "Error creating lead",
-        error: error.message,
-      });
+        console.error("Error creating lead:", error);
+        res.status(500).json({
+            success: false,
+            message: "Error creating lead",
+            error: error.message,
+        });
     }
-  }
+}
 
   async getAllLeads(req, res) {
     try {

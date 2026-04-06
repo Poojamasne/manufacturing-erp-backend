@@ -389,59 +389,104 @@ class LeadController {
     try {
         const { search, page = 1, limit = 50 } = req.query;
 
-        let query = `
+        // First get all active products with pagination
+        let productQuery = `
             SELECT 
-                lp.product_id,
-                lp.product_name,
-                lp.variant,
-                lp.quantity,
-                lp.unit_price,
-                lp.total_price,
+                p.id as product_id,
+                p.name as product_name,
                 p.category,
-                p.price as original_price,
+                p.price as base_price,
                 p.is_active,
-                COUNT(DISTINCT lp.lead_id) as number_of_leads,
-                GROUP_CONCAT(DISTINCT l.lead_id SEPARATOR ', ') as lead_ids
-            FROM lead_products lp
-            LEFT JOIN products p ON lp.product_id = p.id
-            LEFT JOIN leads l ON lp.lead_id = l.id
-            WHERE 1=1
+                p.created_at
+            FROM products p
+            WHERE p.is_active = 1
         `;
-        const params = [];
+        const productParams = [];
 
-        // Search by product name or variant
+        // Search by product name or category
         if (search) {
-            query += ` AND (lp.product_name LIKE ? OR lp.variant LIKE ? OR p.category LIKE ?)`;
-            const searchTerm = `%${search}%`;
-            params.push(searchTerm, searchTerm, searchTerm);
+            productQuery += ` AND (p.name LIKE ? OR p.category LIKE ?)`;
+            productParams.push(`%${search}%`, `%${search}%`);
         }
 
-        query += ` GROUP BY lp.product_id, lp.product_name, lp.variant, lp.unit_price`;
-
         // Get total count for pagination
-        let countQuery = `
-            SELECT COUNT(DISTINCT CONCAT(product_id, '-', IFNULL(variant, ''))) as total 
-            FROM lead_products 
-            WHERE 1=1
-        `;
+        let countQuery = "SELECT COUNT(*) as total FROM products WHERE is_active = 1";
         const countParams = [];
 
         if (search) {
-            countQuery += ` AND (product_name LIKE ? OR variant LIKE ?)`;
+            countQuery += ` AND (name LIKE ? OR category LIKE ?)`;
             countParams.push(`%${search}%`, `%${search}%`);
         }
 
         const [countResult] = await pool.query(countQuery, countParams);
 
-        // Add pagination
-        query += ` ORDER BY lp.product_id ASC, lp.variant ASC LIMIT ? OFFSET ?`;
-        params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
+        // Add pagination to product query
+        productQuery += ` ORDER BY p.id ASC LIMIT ? OFFSET ?`;
+        productParams.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
 
-        const [products] = await pool.query(query, params);
+        const [products] = await pool.query(productQuery, productParams);
+
+        // If no products found, return empty array
+        if (products.length === 0) {
+            return res.status(200).json({
+                success: true,
+                data: [],
+                pagination: {
+                    page: parseInt(page),
+                    limit: parseInt(limit),
+                    total: 0,
+                    pages: 0
+                }
+            });
+        }
+
+        // Get all variants for these products
+        const productIds = products.map(p => p.product_id);
+        const [variants] = await pool.query(
+            `SELECT 
+                lp.product_id,
+                lp.id as variant_id,
+                lp.variant as variant_name,
+                lp.quantity,
+                lp.unit_price,
+                lp.total_price,
+                l.lead_id,
+                l.company_name,
+                l.status
+            FROM lead_products lp
+            LEFT JOIN leads l ON lp.lead_id = l.id
+            WHERE lp.product_id IN (?) AND lp.variant IS NOT NULL
+            ORDER BY lp.product_id, lp.variant`,
+            [productIds]
+        );
+
+        // Group variants by product_id
+        const variantsByProduct = {};
+        variants.forEach(variant => {
+            if (!variantsByProduct[variant.product_id]) {
+                variantsByProduct[variant.product_id] = [];
+            }
+            variantsByProduct[variant.product_id].push({
+                variant_id: variant.variant_id,
+                variant_name: variant.variant_name,
+                quantity: variant.quantity,
+                unit_price: variant.unit_price,
+                total_price: variant.total_price,
+                lead_id: variant.lead_id,
+                company_name: variant.company_name,
+                status: variant.status
+            });
+        });
+
+        // Attach variants to products
+        const productsWithVariants = products.map(product => ({
+            ...product,
+            variants: variantsByProduct[product.product_id] || []
+        }));
 
         res.status(200).json({
             success: true,
-            data: products,
+            data: productsWithVariants,
             pagination: {
                 page: parseInt(page),
                 limit: parseInt(limit),
@@ -458,6 +503,8 @@ class LeadController {
         });
     }
 }
+  
 }
+
 
 module.exports = new LeadController();

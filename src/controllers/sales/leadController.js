@@ -335,20 +335,14 @@ class LeadController {
 
   async getAllProducts(req, res) {
     try {
-      const { search, page = 1, limit = 50, is_active } = req.query;
+      const { search, page = 1, limit = 50 } = req.query;
 
       let query = `
-            SELECT id, name, category, price, is_active, created_at
+            SELECT id, name, category, price, created_at
             FROM products
             WHERE 1=1
         `;
       const params = [];
-
-      // Filter by active status
-      if (is_active !== undefined) {
-        query += ` AND is_active = ?`;
-        params.push(is_active === "true" || is_active === "1" ? 1 : 0);
-      }
 
       // Search by name or category
       if (search) {
@@ -358,10 +352,15 @@ class LeadController {
       }
 
       // Get total count for pagination
-      const [countResult] = await pool.query(
-        `SELECT COUNT(*) as total FROM products WHERE 1=1 ${search ? "AND (name LIKE ? OR category LIKE ?)" : ""}`,
-        search ? [`%${search}%`, `%${search}%`] : [],
-      );
+      let countQuery = "SELECT COUNT(*) as total FROM products WHERE 1=1";
+      const countParams = [];
+
+      if (search) {
+        countQuery += ` AND (name LIKE ? OR category LIKE ?)`;
+        countParams.push(`%${search}%`, `%${search}%`);
+      }
+
+      const [countResult] = await pool.query(countQuery, countParams);
 
       // Add pagination
       query += ` ORDER BY name ASC LIMIT ? OFFSET ?`;

@@ -387,69 +387,77 @@ class LeadController {
 
   async getAllProducts(req, res) {
     try {
-      const { search, page = 1, limit = 50, is_active } = req.query;
+        const { search, page = 1, limit = 50 } = req.query;
 
-      let query = `
-            SELECT id, name, category, price, is_active, created_at
-            FROM products
+        let query = `
+            SELECT 
+                lp.product_id,
+                lp.product_name,
+                lp.variant,
+                lp.quantity,
+                lp.unit_price,
+                lp.total_price,
+                p.category,
+                p.price as original_price,
+                p.is_active,
+                COUNT(DISTINCT lp.lead_id) as number_of_leads,
+                GROUP_CONCAT(DISTINCT l.lead_id SEPARATOR ', ') as lead_ids
+            FROM lead_products lp
+            LEFT JOIN products p ON lp.product_id = p.id
+            LEFT JOIN leads l ON lp.lead_id = l.id
             WHERE 1=1
         `;
-      const params = [];
+        const params = [];
 
-      // Filter by active status
-      if (is_active !== undefined && is_active !== "") {
-        query += ` AND is_active = ?`;
-        params.push(is_active === "true" || is_active === "1" ? 1 : 0);
-      }
+        // Search by product name or variant
+        if (search) {
+            query += ` AND (lp.product_name LIKE ? OR lp.variant LIKE ? OR p.category LIKE ?)`;
+            const searchTerm = `%${search}%`;
+            params.push(searchTerm, searchTerm, searchTerm);
+        }
 
-      // Search by name or category
-      if (search) {
-        query += ` AND (name LIKE ? OR category LIKE ?)`;
-        const searchTerm = `%${search}%`;
-        params.push(searchTerm, searchTerm);
-      }
+        query += ` GROUP BY lp.product_id, lp.product_name, lp.variant, lp.unit_price`;
 
-      // Get total count for pagination
-      let countQuery = "SELECT COUNT(*) as total FROM products WHERE 1=1";
-      const countParams = [];
+        // Get total count for pagination
+        let countQuery = `
+            SELECT COUNT(DISTINCT CONCAT(product_id, '-', IFNULL(variant, ''))) as total 
+            FROM lead_products 
+            WHERE 1=1
+        `;
+        const countParams = [];
 
-      if (is_active !== undefined && is_active !== "") {
-        countQuery += ` AND is_active = ?`;
-        countParams.push(is_active === "true" || is_active === "1" ? 1 : 0);
-      }
+        if (search) {
+            countQuery += ` AND (product_name LIKE ? OR variant LIKE ?)`;
+            countParams.push(`%${search}%`, `%${search}%`);
+        }
 
-      if (search) {
-        countQuery += ` AND (name LIKE ? OR category LIKE ?)`;
-        countParams.push(`%${search}%`, `%${search}%`);
-      }
+        const [countResult] = await pool.query(countQuery, countParams);
 
-      const [countResult] = await pool.query(countQuery, countParams);
+        // Add pagination
+        query += ` ORDER BY lp.product_id ASC, lp.variant ASC LIMIT ? OFFSET ?`;
+        params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
 
-      // Add pagination - ORDER BY id ASC instead of name
-      query += ` ORDER BY id ASC LIMIT ? OFFSET ?`;
-      params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
+        const [products] = await pool.query(query, params);
 
-      const [products] = await pool.query(query, params);
-
-      res.status(200).json({
-        success: true,
-        data: products,
-        pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
-          total: countResult[0].total,
-          pages: Math.ceil(countResult[0].total / limit),
-        },
-      });
+        res.status(200).json({
+            success: true,
+            data: products,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total: countResult[0].total,
+                pages: Math.ceil(countResult[0].total / limit)
+            }
+        });
     } catch (error) {
-      console.error("Error fetching products:", error);
-      res.status(500).json({
-        success: false,
-        message: "Error fetching products",
-        error: error.message,
-      });
+        console.error("Error fetching products:", error);
+        res.status(500).json({
+            success: false,
+            message: "Error fetching products",
+            error: error.message
+        });
     }
-  }
+}
 }
 
 module.exports = new LeadController();

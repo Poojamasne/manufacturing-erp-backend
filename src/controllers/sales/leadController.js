@@ -74,61 +74,98 @@ class LeadController {
     }
     
     async getAllLeads(req, res) {
-        try {
-            const { status, priority, search, page = 1, limit = 10 } = req.query;
-            
-            let query = `
-                SELECT l.*, u.name as assigned_to_name,
-                       (SELECT COUNT(*) FROM lead_products WHERE lead_id = l.id) as product_count
-                FROM leads l
-                LEFT JOIN users u ON l.assigned_to = u.id
-                WHERE 1=1
-            `;
-            const params = [];
-            
-            if (status && status !== 'All') {
-                query += ` AND l.status = ?`;
-                params.push(status);
-            }
-            if (priority && priority !== 'All') {
-                query += ` AND l.priority = ?`;
-                params.push(priority);
-            }
-            if (search) {
-                query += ` AND (l.company_name LIKE ? OR l.lead_id LIKE ? OR l.phone LIKE ?)`;
-                const searchTerm = `%${search}%`;
-                params.push(searchTerm, searchTerm, searchTerm);
-            }
-            
-            query += ` ORDER BY l.created_at DESC LIMIT ? OFFSET ?`;
-            params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
-            
-            const [leads] = await pool.query(query, params);
-            
-            const [countResult] = await pool.query(
-                'SELECT COUNT(*) as total FROM leads',
-                []
+    try {
+        const { status, priority, search, page = 1, limit = 10 } = req.query;
+        
+        let query = `
+            SELECT l.*, u.name as assigned_to_name
+            FROM leads l
+            LEFT JOIN users u ON l.assigned_to = u.id
+            WHERE 1=1
+        `;
+        const params = [];
+        
+        if (status && status !== 'All') {
+            query += ` AND l.status = ?`;
+            params.push(status);
+        }
+        if (priority && priority !== 'All') {
+            query += ` AND l.priority = ?`;
+            params.push(priority);
+        }
+        if (search) {
+            query += ` AND (l.company_name LIKE ? OR l.lead_id LIKE ? OR l.phone LIKE ?)`;
+            const searchTerm = `%${search}%`;
+            params.push(searchTerm, searchTerm, searchTerm);
+        }
+        
+        query += ` ORDER BY l.created_at DESC LIMIT ? OFFSET ?`;
+        params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
+        
+        const [leads] = await pool.query(query, params);
+        
+        // Get total count for pagination
+        let countQuery = 'SELECT COUNT(*) as total FROM leads WHERE 1=1';
+        const countParams = [];
+        
+        if (status && status !== 'All') {
+            countQuery += ` AND status = ?`;
+            countParams.push(status);
+        }
+        if (priority && priority !== 'All') {
+            countQuery += ` AND priority = ?`;
+            countParams.push(priority);
+        }
+        if (search) {
+            countQuery += ` AND (company_name LIKE ? OR lead_id LIKE ? OR phone LIKE ?)`;
+            const searchTerm = `%${search}%`;
+            countParams.push(searchTerm, searchTerm, searchTerm);
+        }
+        
+        const [countResult] = await pool.query(countQuery, countParams);
+        
+        // Fetch products for all leads
+        if (leads.length > 0) {
+            const leadIds = leads.map(lead => lead.id);
+            const [allProducts] = await pool.query(
+                'SELECT * FROM lead_products WHERE lead_id IN (?)',
+                [leadIds]
             );
             
-            res.status(200).json({
-                success: true,
-                data: leads,
-                pagination: {
-                    page: parseInt(page),
-                    limit: parseInt(limit),
-                    total: countResult[0].total,
-                    pages: Math.ceil(countResult[0].total / limit)
+            // Group products by lead_id
+            const productsByLead = {};
+            allProducts.forEach(product => {
+                if (!productsByLead[product.lead_id]) {
+                    productsByLead[product.lead_id] = [];
                 }
+                productsByLead[product.lead_id].push(product);
             });
-        } catch (error) {
-            console.error('Error fetching leads:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Error fetching leads',
-                error: error.message
+            
+            // Attach products to each lead
+            leads.forEach(lead => {
+                lead.products = productsByLead[lead.lead_id] || [];
             });
         }
+        
+        res.status(200).json({
+            success: true,
+            data: leads,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total: countResult[0].total,
+                pages: Math.ceil(countResult[0].total / limit)
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching leads:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching leads',
+            error: error.message
+        });
     }
+}
     
     async getLeadById(req, res) {
         try {

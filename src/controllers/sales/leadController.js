@@ -70,12 +70,14 @@ class LeadController {
             // Insert products if any
             if (products && products.length > 0) {
                 for (const product of products) {
-                    // Validate product_id if provided
                     let productId = product.product_id || null;
+                    let variantId = product.variant_id || null;
                     let productName = product.product_name;
+                    let variantName = product.variant;
                     let unitPrice = product.unit_price;
-                    
-                    // If product_id is provided, fetch product details from products table
+                    let quantity = product.quantity;
+
+                    // If product_id is provided, fetch product details
                     if (productId) {
                         const [existingProduct] = await connection.query(
                             "SELECT name, price FROM products WHERE id = ? AND is_active = 1",
@@ -83,32 +85,56 @@ class LeadController {
                         );
                         
                         if (existingProduct.length > 0) {
-                            // Use product name from database if not provided
-                            if (!productName) {
-                                productName = existingProduct[0].name;
-                            }
-                            // Optionally use price from database if unit_price not provided
+                            productName = existingProduct[0].name;
                             if (!unitPrice || unitPrice === 0) {
                                 unitPrice = existingProduct[0].price;
                             }
                         } else {
-                            // Product ID doesn't exist or is inactive
+                            await connection.rollback();
                             return res.status(400).json({
                                 success: false,
                                 message: `Product with ID ${productId} not found or inactive`
                             });
                         }
                     }
+
+                    // If variant_id is provided, fetch variant details from lead_products
+                    if (variantId) {
+                        const [existingVariant] = await connection.query(
+                            `SELECT variant, unit_price, product_id 
+                             FROM lead_products 
+                             WHERE id = ?`,
+                            [variantId]
+                        );
+                        
+                        if (existingVariant.length > 0) {
+                            variantName = existingVariant[0].variant;
+                            if (!unitPrice || unitPrice === 0) {
+                                unitPrice = existingVariant[0].unit_price;
+                            }
+                            if (!productId) {
+                                productId = existingVariant[0].product_id;
+                            }
+                        } else {
+                            await connection.rollback();
+                            return res.status(400).json({
+                                success: false,
+                                message: `Variant with ID ${variantId} not found`
+                            });
+                        }
+                    }
                     
                     // Validate required fields
                     if (!productName) {
+                        await connection.rollback();
                         return res.status(400).json({
                             success: false,
                             message: "Product name is required for each product"
                         });
                     }
                     
-                    if (!product.quantity || product.quantity <= 0) {
+                    if (!quantity || quantity <= 0) {
+                        await connection.rollback();
                         return res.status(400).json({
                             success: false,
                             message: "Valid quantity is required for each product"
@@ -116,6 +142,7 @@ class LeadController {
                     }
                     
                     if (!unitPrice || unitPrice <= 0) {
+                        await connection.rollback();
                         return res.status(400).json({
                             success: false,
                             message: "Valid unit price is required for each product"
@@ -130,10 +157,10 @@ class LeadController {
                             result.insertId,
                             productId,
                             productName,
-                            product.variant || null,
-                            product.quantity,
+                            variantName || null,
+                            quantity,
                             unitPrice,
-                            product.quantity * unitPrice,
+                            quantity * unitPrice,
                         ],
                     );
                 }
@@ -160,7 +187,7 @@ class LeadController {
             error: error.message,
         });
     }
-}
+  }
 
   async getAllLeads(req, res) {
     try {

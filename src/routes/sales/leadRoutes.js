@@ -11,5 +11,6 @@ router.get('/leads', leadController.getAllLeads);
 router.get('/leads/:id', leadController.getLeadById);
 router.put('/leads/:id', leadController.updateLead);
 router.delete('/leads/:id', authorize('admin', 'manager'), leadController.deleteLead);
+router.get('/products', leadController.getAllProducts);
 
 module.exports = router;

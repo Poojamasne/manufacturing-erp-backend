@@ -4,19 +4,19 @@ const bcrypt = require('bcryptjs');
 class EmployeeController {
     async getAllEmployees(req, res) {
         try {
-            const { search, status, page = 1, limit = 10 } = req.query;
+            const { search, is_active, page = 1, limit = 10 } = req.query;
             
             let query = `
-                SELECT id, user_id, name, email, designation, role, phone, status, created_at
+                SELECT id, user_id, name, email, designation, role, phone, is_active, created_at
                 FROM users
                 WHERE 1=1
             `;
             const params = [];
             
-            // Filter by status
-            if (status !== undefined && status !== '') {
-                query += ` AND status = ?`;
-                params.push(parseInt(status));
+            // Filter by is_active
+            if (is_active !== undefined && is_active !== '') {
+                query += ` AND is_active = ?`;
+                params.push(parseInt(is_active));
             }
             
             if (search) {
@@ -34,9 +34,9 @@ class EmployeeController {
             let countQuery = 'SELECT COUNT(*) as total FROM users WHERE 1=1';
             const countParams = [];
             
-            if (status !== undefined && status !== '') {
-                countQuery += ` AND status = ?`;
-                countParams.push(parseInt(status));
+            if (is_active !== undefined && is_active !== '') {
+                countQuery += ` AND is_active = ?`;
+                countParams.push(parseInt(is_active));
             }
             
             if (search) {
@@ -72,7 +72,7 @@ class EmployeeController {
             const { id } = req.params;
             
             const [employees] = await pool.query(
-                `SELECT id, user_id, name, email, designation, role, phone, status, created_at
+                `SELECT id, user_id, name, email, designation, role, phone, is_active, created_at
                  FROM users WHERE id = ?`,
                 [id]
             );
@@ -100,9 +100,9 @@ class EmployeeController {
     
     async createEmployee(req, res) {
         try {
-            const { name, email, password, designation, role, phone, status } = req.body;
+            const { name, email, password, designation, role, phone, is_active } = req.body;
             
-            // Validate required fields including status
+            // Validate required fields
             if (!name || !email || !password) {
                 return res.status(400).json({
                     success: false,
@@ -110,19 +110,19 @@ class EmployeeController {
                 });
             }
             
-            // Status is compulsory
-            if (status === undefined || status === null) {
+            // is_active validation
+            if (is_active === undefined || is_active === null) {
                 return res.status(400).json({
                     success: false,
-                    message: 'Status is required. Use 1 for Active or 0 for Inactive'
+                    message: 'is_active is required. Use 1 for Active or 0 for Inactive'
                 });
             }
             
-            // Validate status value (must be 0 or 1)
-            if (status !== 0 && status !== 1) {
+            // Validate is_active value (must be 0 or 1)
+            if (is_active !== 0 && is_active !== 1) {
                 return res.status(400).json({
                     success: false,
-                    message: 'Status must be either 0 (Inactive) or 1 (Active)'
+                    message: 'is_active must be either 0 (Inactive) or 1 (Active)'
                 });
             }
             
@@ -139,10 +139,10 @@ class EmployeeController {
             const userId = 'EMP' + Date.now();
             
             const [result] = await pool.query(
-                `INSERT INTO users (user_id, name, email, password, designation, role, phone, status)
+                `INSERT INTO users (user_id, name, email, password, designation, role, phone, is_active)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
                 [userId, name, email, hashedPassword, designation || 'Sales Executive', 
-                 role || 'salesperson', phone || null, status]
+                 role || 'salesperson', phone || null, is_active]
             );
             
             res.status(201).json({
@@ -153,8 +153,11 @@ class EmployeeController {
                     user_id: userId, 
                     name, 
                     email,
-                    status: status,
-                    status_text: status === 1 ? 'Active' : 'Inactive'
+                    designation: designation || 'Sales Executive',
+                    role: role || 'salesperson',
+                    phone: phone || null,
+                    is_active: is_active,
+                    status_text: is_active === 1 ? 'Active' : 'Inactive'
                 }
             });
         } catch (error) {
@@ -172,24 +175,24 @@ class EmployeeController {
             const { id } = req.params;
             const updates = req.body;
             
-            const allowedFields = ['name', 'designation', 'role', 'phone', 'status'];
+            const allowedFields = ['name', 'designation', 'role', 'phone', 'is_active'];
             
             const updateFields = [];
             const params = [];
             
             for (const field of allowedFields) {
                 if (updates[field] !== undefined) {
-                    // For status field, validate it's 0 or 1
-                    if (field === 'status') {
-                        const statusValue = parseInt(updates[field]);
-                        if (statusValue !== 0 && statusValue !== 1) {
+                    // For is_active field, validate it's 0 or 1
+                    if (field === 'is_active') {
+                        const isActiveValue = parseInt(updates[field]);
+                        if (isActiveValue !== 0 && isActiveValue !== 1) {
                             return res.status(400).json({
                                 success: false,
-                                message: 'Status must be either 0 (Inactive) or 1 (Active)'
+                                message: 'is_active must be either 0 (Inactive) or 1 (Active)'
                             });
                         }
                         updateFields.push(`${field} = ?`);
-                        params.push(statusValue);
+                        params.push(isActiveValue);
                     } else {
                         updateFields.push(`${field} = ?`);
                         params.push(updates[field]);
@@ -212,7 +215,7 @@ class EmployeeController {
             
             // Fetch updated employee data
             const [updatedEmployee] = await pool.query(
-                `SELECT id, user_id, name, email, designation, role, phone, status
+                `SELECT id, user_id, name, email, designation, role, phone, is_active
                  FROM users WHERE id = ?`,
                 [id]
             );
@@ -237,7 +240,7 @@ class EmployeeController {
             const { id } = req.params;
             
             // Check if employee exists
-            const [employee] = await pool.query('SELECT id, status FROM users WHERE id = ?', [id]);
+            const [employee] = await pool.query('SELECT id, is_active FROM users WHERE id = ?', [id]);
             if (employee.length === 0) {
                 return res.status(404).json({
                     success: false,
@@ -245,15 +248,15 @@ class EmployeeController {
                 });
             }
             
-            // Soft delete - set status to 0 (inactive)
-            await pool.query('UPDATE users SET status = 0, updated_at = NOW() WHERE id = ?', [id]);
+            // Soft delete - set is_active to 0 (inactive)
+            await pool.query('UPDATE users SET is_active = 0, updated_at = NOW() WHERE id = ?', [id]);
             
             res.status(200).json({
                 success: true,
                 message: 'Employee deactivated successfully',
                 data: {
                     id: parseInt(id),
-                    previous_status: employee[0].status,
+                    previous_status: employee[0].is_active,
                     current_status: 0,
                     status_text: 'Inactive'
                 }
@@ -273,7 +276,7 @@ class EmployeeController {
             const { id } = req.params;
             
             // Check if employee exists
-            const [employee] = await pool.query('SELECT id, status FROM users WHERE id = ?', [id]);
+            const [employee] = await pool.query('SELECT id, is_active FROM users WHERE id = ?', [id]);
             if (employee.length === 0) {
                 return res.status(404).json({
                     success: false,
@@ -281,15 +284,15 @@ class EmployeeController {
                 });
             }
             
-            // Activate employee - set status to 1
-            await pool.query('UPDATE users SET status = 1, updated_at = NOW() WHERE id = ?', [id]);
+            // Activate employee - set is_active to 1
+            await pool.query('UPDATE users SET is_active = 1, updated_at = NOW() WHERE id = ?', [id]);
             
             res.status(200).json({
                 success: true,
                 message: 'Employee activated successfully',
                 data: {
                     id: parseInt(id),
-                    previous_status: employee[0].status,
+                    previous_status: employee[0].is_active,
                     current_status: 1,
                     status_text: 'Active'
                 }

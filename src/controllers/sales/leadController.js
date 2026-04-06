@@ -335,69 +335,69 @@ class LeadController {
 
   async getAllProducts(req, res) {
     try {
-        const { search, page = 1, limit = 50, is_active } = req.query;
-        
-        let query = `
+      const { search, page = 1, limit = 50, is_active } = req.query;
+
+      let query = `
             SELECT id, name, category, price, is_active, created_at
             FROM products
             WHERE 1=1
         `;
-        const params = [];
-        
-        // Filter by active status
-        if (is_active !== undefined && is_active !== '') {
-            query += ` AND is_active = ?`;
-            params.push(is_active === 'true' || is_active === '1' ? 1 : 0);
-        }
-        
-        // Search by name or category
-        if (search) {
-            query += ` AND (name LIKE ? OR category LIKE ?)`;
-            const searchTerm = `%${search}%`;
-            params.push(searchTerm, searchTerm);
-        }
-        
-        // Get total count for pagination
-        let countQuery = "SELECT COUNT(*) as total FROM products WHERE 1=1";
-        const countParams = [];
-        
-        if (is_active !== undefined && is_active !== '') {
-            countQuery += ` AND is_active = ?`;
-            countParams.push(is_active === 'true' || is_active === '1' ? 1 : 0);
-        }
-        
-        if (search) {
-            countQuery += ` AND (name LIKE ? OR category LIKE ?)`;
-            countParams.push(`%${search}%`, `%${search}%`);
-        }
-        
-        const [countResult] = await pool.query(countQuery, countParams);
-        
-        // Add pagination
-        query += ` ORDER BY name ASC LIMIT ? OFFSET ?`;
-        params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
-        
-        const [products] = await pool.query(query, params);
-        
-        res.status(200).json({
-            success: true,
-            data: products,
-            pagination: {
-                page: parseInt(page),
-                limit: parseInt(limit),
-                total: countResult[0].total,
-                pages: Math.ceil(countResult[0].total / limit)
-            }
-        });
+      const params = [];
+
+      // Filter by active status
+      if (is_active !== undefined && is_active !== "") {
+        query += ` AND is_active = ?`;
+        params.push(is_active === "true" || is_active === "1" ? 1 : 0);
+      }
+
+      // Search by name or category
+      if (search) {
+        query += ` AND (name LIKE ? OR category LIKE ?)`;
+        const searchTerm = `%${search}%`;
+        params.push(searchTerm, searchTerm);
+      }
+
+      // Get total count for pagination
+      let countQuery = "SELECT COUNT(*) as total FROM products WHERE 1=1";
+      const countParams = [];
+
+      if (is_active !== undefined && is_active !== "") {
+        countQuery += ` AND is_active = ?`;
+        countParams.push(is_active === "true" || is_active === "1" ? 1 : 0);
+      }
+
+      if (search) {
+        countQuery += ` AND (name LIKE ? OR category LIKE ?)`;
+        countParams.push(`%${search}%`, `%${search}%`);
+      }
+
+      const [countResult] = await pool.query(countQuery, countParams);
+
+      // Add pagination - ORDER BY id ASC instead of name
+      query += ` ORDER BY id ASC LIMIT ? OFFSET ?`;
+      params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
+
+      const [products] = await pool.query(query, params);
+
+      res.status(200).json({
+        success: true,
+        data: products,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: countResult[0].total,
+          pages: Math.ceil(countResult[0].total / limit),
+        },
+      });
     } catch (error) {
-        console.error("Error fetching products:", error);
-        res.status(500).json({
-            success: false,
-            message: "Error fetching products",
-            error: error.message
-        });
+      console.error("Error fetching products:", error);
+      res.status(500).json({
+        success: false,
+        message: "Error fetching products",
+        error: error.message,
+      });
     }
-}
+  }
 }
 
 module.exports = new LeadController();

@@ -73,7 +73,7 @@ class LeadController {
         }
     }
     
-    async getAllLeads(req, res) {
+   async getAllLeads(req, res) {
     try {
         const { status, priority, search, page = 1, limit = 10 } = req.query;
         
@@ -124,11 +124,14 @@ class LeadController {
         
         const [countResult] = await pool.query(countQuery, countParams);
         
-        // Fetch products for all leads
+        // Fetch products for all leads with complete product details
         if (leads.length > 0) {
             const leadIds = leads.map(lead => lead.id);
             const [allProducts] = await pool.query(
-                'SELECT * FROM lead_products WHERE lead_id IN (?)',
+                `SELECT lp.*, p.name as product_name_from_db, p.category, p.price as original_price
+                 FROM lead_products lp
+                 LEFT JOIN products p ON lp.product_id = p.id
+                 WHERE lp.lead_id IN (?)`,
                 [leadIds]
             );
             
@@ -138,12 +141,23 @@ class LeadController {
                 if (!productsByLead[product.lead_id]) {
                     productsByLead[product.lead_id] = [];
                 }
-                productsByLead[product.lead_id].push(product);
+                // Format product data
+                productsByLead[product.lead_id].push({
+                    id: product.id,
+                    product_id: product.product_id,
+                    product_name: product.product_name || product.product_name_from_db,
+                    variant: product.variant,
+                    quantity: product.quantity,
+                    unit_price: product.unit_price,
+                    total_price: product.total_price,
+                    category: product.category,
+                    original_price: product.original_price
+                });
             });
             
             // Attach products to each lead
             leads.forEach(lead => {
-                lead.products = productsByLead[lead.lead_id] || [];
+                lead.products = productsByLead[lead.id] || [];
             });
         }
         
@@ -166,7 +180,7 @@ class LeadController {
         });
     }
 }
-    
+
     async getLeadById(req, res) {
         try {
             const { id } = req.params;

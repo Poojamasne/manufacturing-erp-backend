@@ -29,7 +29,7 @@ class ReportsController {
                 revenueQuery = `
                     SELECT 
                         DATE_FORMAT(l.created_at, '%a') as name,
-                        COALESCE(SUM(o.value), 0) as val
+                        CAST(COALESCE(SUM(o.value), 0) AS DECIMAL(10,2)) as val
                     FROM leads l
                     LEFT JOIN opportunities o ON l.id = o.lead_id AND o.status = 'Won'
                     WHERE 1=1 ${dateCondition}
@@ -40,7 +40,7 @@ class ReportsController {
                 revenueQuery = `
                     SELECT 
                         CONCAT('W', WEEK(l.created_at, 1) - WEEK(DATE_SUB(l.created_at, INTERVAL DAYOFMONTH(l.created_at)-1 DAY), 1) + 1) as name,
-                        COALESCE(SUM(o.value), 0) as val
+                        CAST(COALESCE(SUM(o.value), 0) AS DECIMAL(10,2)) as val
                     FROM leads l
                     LEFT JOIN opportunities o ON l.id = o.lead_id AND o.status = 'Won'
                     WHERE 1=1 ${dateCondition}
@@ -51,7 +51,7 @@ class ReportsController {
                 revenueQuery = `
                     SELECT 
                         DATE_FORMAT(l.created_at, '%b') as name,
-                        COALESCE(SUM(o.value), 0) as val
+                        CAST(COALESCE(SUM(o.value), 0) AS DECIMAL(10,2)) as val
                     FROM leads l
                     LEFT JOIN opportunities o ON l.id = o.lead_id AND o.status = 'Won'
                     WHERE 1=1 ${dateCondition}
@@ -62,7 +62,7 @@ class ReportsController {
                 revenueQuery = `
                     SELECT 
                         DATE_FORMAT(l.created_at, '%Y') as name,
-                        COALESCE(SUM(o.value), 0) as val
+                        CAST(COALESCE(SUM(o.value), 0) AS DECIMAL(10,2)) as val
                     FROM leads l
                     LEFT JOIN opportunities o ON l.id = o.lead_id AND o.status = 'Won'
                     WHERE 1=1 ${dateCondition}
@@ -70,11 +70,10 @@ class ReportsController {
                     ORDER BY YEAR(l.created_at) ASC
                 `;
             } else {
-                // Default daily for custom range
                 revenueQuery = `
                     SELECT 
                         DATE_FORMAT(l.created_at, '%Y-%m-%d') as name,
-                        COALESCE(SUM(o.value), 0) as val
+                        CAST(COALESCE(SUM(o.value), 0) AS DECIMAL(10,2)) as val
                     FROM leads l
                     LEFT JOIN opportunities o ON l.id = o.lead_id AND o.status = 'Won'
                     WHERE 1=1 ${dateCondition}
@@ -85,6 +84,12 @@ class ReportsController {
             }
             
             const [revenueData] = await pool.query(revenueQuery, dateParams);
+            
+            // Convert val to number
+            const formattedRevenueData = revenueData.map(item => ({
+                name: item.name,
+                val: parseFloat(item.val) || 0
+            }));
             
             // 2. Get Lead Sources Distribution
             const [sourceData] = await pool.query(`
@@ -100,7 +105,7 @@ class ReportsController {
             // 3. Get KPI Statistics
             const [kpiData] = await pool.query(`
                 SELECT 
-                    COALESCE(SUM(o.value), 0) as total_revenue,
+                    CAST(COALESCE(SUM(o.value), 0) AS DECIMAL(10,2)) as total_revenue,
                     COUNT(DISTINCT l.id) as total_leads,
                     COUNT(DISTINCT CASE WHEN o.status = 'Won' THEN o.id END) as won_deals,
                     ROUND(
@@ -119,6 +124,7 @@ class ReportsController {
             // Format KPIs for frontend display
             const totalRevenue = parseFloat(kpiData[0]?.total_revenue || 0);
             const totalLeads = parseInt(kpiData[0]?.total_leads || 0);
+            const wonDeals = parseInt(kpiData[0]?.won_deals || 0);
             const conversionRate = parseFloat(kpiData[0]?.conversion_rate || 0);
             const avgDealValue = parseFloat(kpiData[0]?.avg_deal_value || 0);
             
@@ -134,12 +140,10 @@ class ReportsController {
                 formattedRevenue = `₹${totalRevenue.toFixed(0)}`;
             }
             
-            // Format leads (K for thousands)
+            // Format leads
             let formattedLeads = totalLeads.toString();
             if (totalLeads >= 1000) {
                 formattedLeads = `${(totalLeads / 1000).toFixed(1)}K`;
-            } else if (totalLeads === 0) {
-                formattedLeads = '0';
             }
             
             // Format avg deal value
@@ -152,12 +156,12 @@ class ReportsController {
                 formattedAvgValue = `₹${avgDealValue.toFixed(0)}`;
             }
             
-            // 4. Get Product Performance (Manufacturing vs Sales)
+            // 4. Get Product Performance
             const [productData] = await pool.query(`
                 SELECT 
                     lp.product_name as name,
-                    COALESCE(SUM(lp.quantity), 0) as sold,
-                    COALESCE(SUM(lp.total_price), 0) as revenue,
+                    CAST(COALESCE(SUM(lp.quantity), 0) AS UNSIGNED) as sold,
+                    CAST(COALESCE(SUM(lp.total_price), 0) AS DECIMAL(10,2)) as revenue,
                     COUNT(DISTINCT lp.lead_id) as orders
                 FROM lead_products lp
                 INNER JOIN leads l ON lp.lead_id = l.id
@@ -167,15 +171,15 @@ class ReportsController {
                 LIMIT 5
             `, dateParams);
             
-            // Add target (20% higher than sold) and production (10% higher than sold) for chart
+            // Add target and production, ensure sold is number
             const productsWithTargets = productData.map(product => ({
                 name: product.name.length > 15 ? product.name.substring(0, 12) + '...' : product.name,
-                sold: product.sold,
-                target: Math.round(product.sold * 1.2),
-                prod: Math.round(product.sold * 1.1)
+                sold: parseInt(product.sold) || 0,
+                target: Math.round((parseInt(product.sold) || 0) * 1.2),
+                prod: Math.round((parseInt(product.sold) || 0) * 1.1)
             }));
             
-            // 5. Get Sales Leaderboard
+            // 5. Get Sales Leaderboard (remove duplicates)
             const [leaderboardData] = await pool.query(`
                 SELECT 
                     COALESCE(u.name, 'Unassigned') as name,
@@ -186,7 +190,7 @@ class ReportsController {
                             (COUNT(DISTINCT CASE WHEN o.status = 'Won' THEN o.id END) / NULLIF(COUNT(DISTINCT l.id), 0)) * 100, 0
                         ), 1
                     ) as conversion,
-                    COALESCE(SUM(o.value), 0) as revenue
+                    CAST(COALESCE(SUM(o.value), 0) AS DECIMAL(10,2)) as revenue
                 FROM leads l
                 LEFT JOIN opportunities o ON l.id = o.lead_id
                 LEFT JOIN users u ON l.assigned_to = u.id
@@ -196,16 +200,25 @@ class ReportsController {
                 LIMIT 10
             `, dateParams);
             
+            // Remove duplicates by using a Map
+            const uniqueLeaderboard = new Map();
+            leaderboardData.forEach(rep => {
+                const key = rep.name;
+                if (!uniqueLeaderboard.has(key) || uniqueLeaderboard.get(key).revenue < rep.revenue) {
+                    uniqueLeaderboard.set(key, rep);
+                }
+            });
+            
             // Format leaderboard data
-            const formattedLeaderboard = leaderboardData.map(rep => ({
+            const formattedLeaderboard = Array.from(uniqueLeaderboard.values()).map(rep => ({
                 name: rep.name || 'Unassigned',
-                leads: rep.leads || 0,
-                conversion: `${rep.conversion || 0}%`,
-                revenue: `₹${((rep.revenue || 0) / 100000).toFixed(1)}L`
+                leads: parseInt(rep.leads) || 0,
+                conversion: `${parseFloat(rep.conversion) || 0}%`,
+                revenue: `₹${((parseFloat(rep.revenue) || 0) / 100000).toFixed(1)}L`
             }));
             
             // If no data, provide default structure
-            const finalRevenueData = revenueData.length > 0 ? revenueData : [{ name: 'No Data', val: 0 }];
+            const finalRevenueData = formattedRevenueData.length > 0 ? formattedRevenueData : [{ name: 'No Data', val: 0 }];
             const finalSourceData = sourceData.length > 0 ? sourceData : [{ name: 'No Data', value: 100 }];
             const finalProductsData = productsWithTargets.length > 0 ? productsWithTargets : [{ name: 'No Data', sold: 0, target: 0, prod: 0 }];
             const finalLeaderboard = formattedLeaderboard.length > 0 ? formattedLeaderboard : [{ name: 'No Data', leads: 0, conversion: '0%', revenue: '₹0' }];
@@ -256,7 +269,6 @@ class ReportsController {
                 dateParams = [startDate, endDate];
             }
             
-            // Get leads data for export
             const [leadsData] = await pool.query(`
                 SELECT 
                     lead_id, 
@@ -277,7 +289,6 @@ class ReportsController {
                 });
             }
             
-            // Convert to CSV
             const headers = ['Lead ID', 'Company Name', 'Contact Person', 'Status', 'Priority', 'Created Date'];
             const csvRows = [headers.join(',')];
             

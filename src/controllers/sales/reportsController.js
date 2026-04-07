@@ -1,172 +1,309 @@
 const pool = require('../../config/database');
 
 class ReportsController {
-    async getDashboardStats(req, res) {
+    async getReportData(req, res) {
         try {
-            // Get lead statistics
-            const [leadStats] = await pool.query(`
-                SELECT 
-                    COUNT(*) as total_leads,
-                    SUM(CASE WHEN status = 'Won' THEN 1 ELSE 0 END) as won_deals,
-                    SUM(CASE WHEN status = 'New' THEN 1 ELSE 0 END) as new_leads,
-                    SUM(CASE WHEN status = 'Quotation' THEN 1 ELSE 0 END) as quotation_stage
-                FROM leads
-            `);
+            const { range = 'Monthly', startDate, endDate } = req.query;
             
-            // Get order statistics
-            const [orderStats] = await pool.query(`
-                SELECT 
-                    COUNT(*) as total_orders,
-                    SUM(CASE WHEN status = 'Processing' THEN 1 ELSE 0 END) as processing_orders,
-                    SUM(CASE WHEN status = 'Pending' THEN 1 ELSE 0 END) as pending_orders,
-                    COALESCE(SUM(total_amount), 0) as total_revenue
-                FROM orders
-            `);
+            // Build date condition
+            let dateCondition = '';
+            let dateParams = [];
             
-            // Get production statistics
-            const [prodStats] = await pool.query(`
+            if (range === 'Weekly') {
+                dateCondition = `AND l.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+            } else if (range === 'Monthly') {
+                dateCondition = `AND l.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
+            } else if (range === 'Quarterly') {
+                dateCondition = `AND l.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
+            } else if (range === 'Yearly') {
+                dateCondition = `AND l.created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
+            } else if (range === 'Custom' && startDate && endDate) {
+                dateCondition = `AND DATE(l.created_at) BETWEEN ? AND ?`;
+                dateParams = [startDate, endDate];
+            }
+            
+            // 1. Get Revenue Trend Data
+            let revenueQuery = '';
+            
+            if (range === 'Weekly') {
+                revenueQuery = `
+                    SELECT 
+                        DATE_FORMAT(l.created_at, '%a') as name,
+                        COALESCE(SUM(o.value), 0) as val
+                    FROM leads l
+                    LEFT JOIN opportunities o ON l.id = o.lead_id AND o.status = 'Won'
+                    WHERE 1=1 ${dateCondition}
+                    GROUP BY DAYOFWEEK(l.created_at)
+                    ORDER BY DAYOFWEEK(l.created_at) ASC
+                `;
+            } else if (range === 'Monthly') {
+                revenueQuery = `
+                    SELECT 
+                        CONCAT('W', WEEK(l.created_at, 1) - WEEK(DATE_SUB(l.created_at, INTERVAL DAYOFMONTH(l.created_at)-1 DAY), 1) + 1) as name,
+                        COALESCE(SUM(o.value), 0) as val
+                    FROM leads l
+                    LEFT JOIN opportunities o ON l.id = o.lead_id AND o.status = 'Won'
+                    WHERE 1=1 ${dateCondition}
+                    GROUP BY WEEK(l.created_at)
+                    ORDER BY MIN(l.created_at) ASC
+                `;
+            } else if (range === 'Quarterly') {
+                revenueQuery = `
+                    SELECT 
+                        DATE_FORMAT(l.created_at, '%b') as name,
+                        COALESCE(SUM(o.value), 0) as val
+                    FROM leads l
+                    LEFT JOIN opportunities o ON l.id = o.lead_id AND o.status = 'Won'
+                    WHERE 1=1 ${dateCondition}
+                    GROUP BY MONTH(l.created_at)
+                    ORDER BY MONTH(l.created_at) ASC
+                `;
+            } else if (range === 'Yearly') {
+                revenueQuery = `
+                    SELECT 
+                        DATE_FORMAT(l.created_at, '%Y') as name,
+                        COALESCE(SUM(o.value), 0) as val
+                    FROM leads l
+                    LEFT JOIN opportunities o ON l.id = o.lead_id AND o.status = 'Won'
+                    WHERE 1=1 ${dateCondition}
+                    GROUP BY YEAR(l.created_at)
+                    ORDER BY YEAR(l.created_at) ASC
+                `;
+            } else {
+                // Default daily for custom range
+                revenueQuery = `
+                    SELECT 
+                        DATE_FORMAT(l.created_at, '%Y-%m-%d') as name,
+                        COALESCE(SUM(o.value), 0) as val
+                    FROM leads l
+                    LEFT JOIN opportunities o ON l.id = o.lead_id AND o.status = 'Won'
+                    WHERE 1=1 ${dateCondition}
+                    GROUP BY DATE(l.created_at)
+                    ORDER BY l.created_at ASC
+                    LIMIT 30
+                `;
+            }
+            
+            const [revenueData] = await pool.query(revenueQuery, dateParams);
+            
+            // 2. Get Lead Sources Distribution
+            const [sourceData] = await pool.query(`
                 SELECT 
-                    COUNT(*) as total_jobs,
-                    SUM(CASE WHEN status = 'In Progress' THEN 1 ELSE 0 END) as in_progress
-                FROM production_jobs
-            `);
+                    COALESCE(l.lead_source, 'Other') as name,
+                    COUNT(*) as value
+                FROM leads l
+                WHERE 1=1 ${dateCondition}
+                GROUP BY l.lead_source
+                ORDER BY value DESC
+            `, dateParams);
+            
+            // 3. Get KPI Statistics
+            const [kpiData] = await pool.query(`
+                SELECT 
+                    COALESCE(SUM(o.value), 0) as total_revenue,
+                    COUNT(DISTINCT l.id) as total_leads,
+                    COUNT(DISTINCT CASE WHEN o.status = 'Won' THEN o.id END) as won_deals,
+                    ROUND(
+                        IFNULL(
+                            (COUNT(DISTINCT CASE WHEN o.status = 'Won' THEN o.id END) / NULLIF(COUNT(DISTINCT l.id), 0)) * 100, 0
+                        ), 2
+                    ) as conversion_rate,
+                    ROUND(
+                        IFNULL(AVG(o.value), 0), 2
+                    ) as avg_deal_value
+                FROM leads l
+                LEFT JOIN opportunities o ON l.id = o.lead_id
+                WHERE 1=1 ${dateCondition}
+            `, dateParams);
+            
+            // Format KPIs for frontend display
+            const totalRevenue = parseFloat(kpiData[0]?.total_revenue || 0);
+            const totalLeads = parseInt(kpiData[0]?.total_leads || 0);
+            const conversionRate = parseFloat(kpiData[0]?.conversion_rate || 0);
+            const avgDealValue = parseFloat(kpiData[0]?.avg_deal_value || 0);
+            
+            // Format revenue in Lakhs/Crores
+            let formattedRevenue = '₹0';
+            if (totalRevenue >= 10000000) {
+                formattedRevenue = `₹${(totalRevenue / 10000000).toFixed(1)}Cr`;
+            } else if (totalRevenue >= 100000) {
+                formattedRevenue = `₹${(totalRevenue / 100000).toFixed(1)}L`;
+            } else if (totalRevenue >= 1000) {
+                formattedRevenue = `₹${(totalRevenue / 1000).toFixed(1)}K`;
+            } else if (totalRevenue > 0) {
+                formattedRevenue = `₹${totalRevenue.toFixed(0)}`;
+            }
+            
+            // Format leads (K for thousands)
+            let formattedLeads = totalLeads.toString();
+            if (totalLeads >= 1000) {
+                formattedLeads = `${(totalLeads / 1000).toFixed(1)}K`;
+            } else if (totalLeads === 0) {
+                formattedLeads = '0';
+            }
+            
+            // Format avg deal value
+            let formattedAvgValue = '₹0';
+            if (avgDealValue >= 100000) {
+                formattedAvgValue = `₹${(avgDealValue / 100000).toFixed(1)}L`;
+            } else if (avgDealValue >= 1000) {
+                formattedAvgValue = `₹${(avgDealValue / 1000).toFixed(1)}K`;
+            } else if (avgDealValue > 0) {
+                formattedAvgValue = `₹${avgDealValue.toFixed(0)}`;
+            }
+            
+            // 4. Get Product Performance (Manufacturing vs Sales)
+            const [productData] = await pool.query(`
+                SELECT 
+                    lp.product_name as name,
+                    COALESCE(SUM(lp.quantity), 0) as sold,
+                    COALESCE(SUM(lp.total_price), 0) as revenue,
+                    COUNT(DISTINCT lp.lead_id) as orders
+                FROM lead_products lp
+                INNER JOIN leads l ON lp.lead_id = l.id
+                WHERE 1=1 ${dateCondition}
+                GROUP BY lp.product_name
+                ORDER BY sold DESC
+                LIMIT 5
+            `, dateParams);
+            
+            // Add target (20% higher than sold) and production (10% higher than sold) for chart
+            const productsWithTargets = productData.map(product => ({
+                name: product.name.length > 15 ? product.name.substring(0, 12) + '...' : product.name,
+                sold: product.sold,
+                target: Math.round(product.sold * 1.2),
+                prod: Math.round(product.sold * 1.1)
+            }));
+            
+            // 5. Get Sales Leaderboard
+            const [leaderboardData] = await pool.query(`
+                SELECT 
+                    COALESCE(u.name, 'Unassigned') as name,
+                    COUNT(DISTINCT l.id) as leads,
+                    COUNT(DISTINCT CASE WHEN o.status = 'Won' THEN o.id END) as won_deals,
+                    ROUND(
+                        IFNULL(
+                            (COUNT(DISTINCT CASE WHEN o.status = 'Won' THEN o.id END) / NULLIF(COUNT(DISTINCT l.id), 0)) * 100, 0
+                        ), 1
+                    ) as conversion,
+                    COALESCE(SUM(o.value), 0) as revenue
+                FROM leads l
+                LEFT JOIN opportunities o ON l.id = o.lead_id
+                LEFT JOIN users u ON l.assigned_to = u.id
+                WHERE 1=1 ${dateCondition}
+                GROUP BY l.assigned_to, u.name
+                ORDER BY revenue DESC
+                LIMIT 10
+            `, dateParams);
+            
+            // Format leaderboard data
+            const formattedLeaderboard = leaderboardData.map(rep => ({
+                name: rep.name || 'Unassigned',
+                leads: rep.leads || 0,
+                conversion: `${rep.conversion || 0}%`,
+                revenue: `₹${((rep.revenue || 0) / 100000).toFixed(1)}L`
+            }));
+            
+            // If no data, provide default structure
+            const finalRevenueData = revenueData.length > 0 ? revenueData : [{ name: 'No Data', val: 0 }];
+            const finalSourceData = sourceData.length > 0 ? sourceData : [{ name: 'No Data', value: 100 }];
+            const finalProductsData = productsWithTargets.length > 0 ? productsWithTargets : [{ name: 'No Data', sold: 0, target: 0, prod: 0 }];
+            const finalLeaderboard = formattedLeaderboard.length > 0 ? formattedLeaderboard : [{ name: 'No Data', leads: 0, conversion: '0%', revenue: '₹0' }];
             
             res.status(200).json({
                 success: true,
                 data: {
-                    leads: leadStats[0],
-                    orders: orderStats[0],
-                    production: prodStats[0]
+                    revenue: finalRevenueData,
+                    sources: finalSourceData,
+                    kpis: {
+                        rev: formattedRevenue,
+                        leads: formattedLeads,
+                        conv: `${conversionRate}%`,
+                        avg: formattedAvgValue
+                    },
+                    products: finalProductsData,
+                    leaderboard: finalLeaderboard
                 }
             });
         } catch (error) {
-            console.error('Error fetching dashboard stats:', error);
+            console.error('Error fetching report data:', error);
             res.status(500).json({
                 success: false,
-                message: 'Error fetching dashboard stats',
+                message: 'Error fetching report data',
                 error: error.message
             });
         }
     }
     
-    async getRevenueTrend(req, res) {
+    // Export report as CSV
+    async exportReport(req, res) {
         try {
-            // First, check what columns exist in orders table
-            const [columns] = await pool.query(`
-                SELECT COLUMN_NAME 
-                FROM INFORMATION_SCHEMA.COLUMNS 
-                WHERE TABLE_NAME = 'orders' 
-                AND TABLE_SCHEMA = DATABASE()
-            `);
+            const { range = 'Monthly', startDate, endDate } = req.query;
             
-            console.log('Orders table columns:', columns);
+            let dateCondition = '';
+            let dateParams = [];
             
-            // Check if order_date column exists, if not use created_at
-            let dateColumn = 'order_date';
-            const hasOrderDate = columns.some(col => col.COLUMN_NAME === 'order_date');
-            const hasCreatedAt = columns.some(col => col.COLUMN_NAME === 'created_at');
-            
-            if (!hasOrderDate && hasCreatedAt) {
-                dateColumn = 'created_at';
+            if (range === 'Weekly') {
+                dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+            } else if (range === 'Monthly') {
+                dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
+            } else if (range === 'Quarterly') {
+                dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
+            } else if (range === 'Yearly') {
+                dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
+            } else if (range === 'Custom' && startDate && endDate) {
+                dateCondition = `AND DATE(created_at) BETWEEN ? AND ?`;
+                dateParams = [startDate, endDate];
             }
             
-            console.log('Using date column:', dateColumn);
-            
-            // Get revenue trend
-            const [revenue] = await pool.query(`
+            // Get leads data for export
+            const [leadsData] = await pool.query(`
                 SELECT 
-                    DATE_FORMAT(${dateColumn}, '%Y-%m') as month,
-                    COALESCE(SUM(total_amount), 0) as revenue
-                FROM orders
-                WHERE status != 'Cancelled'
-                AND ${dateColumn} IS NOT NULL
-                GROUP BY DATE_FORMAT(${dateColumn}, '%Y-%m')
-                ORDER BY month DESC
-                LIMIT 6
-            `);
+                    lead_id, 
+                    company_name, 
+                    contact_person, 
+                    status, 
+                    priority, 
+                    DATE_FORMAT(created_at, '%Y-%m-%d') as created_date
+                FROM leads
+                WHERE 1=1 ${dateCondition}
+                ORDER BY created_at DESC
+            `, dateParams);
             
-            // If no data, return empty array
-            if (revenue.length === 0) {
-                return res.status(200).json({
-                    success: true,
-                    data: [],
-                    message: 'No order data available'
+            if (leadsData.length === 0) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'No data found for export'
                 });
             }
             
-            // Filter out null months and reverse for chronological order
-            const validData = revenue.filter(r => r.month !== null);
+            // Convert to CSV
+            const headers = ['Lead ID', 'Company Name', 'Contact Person', 'Status', 'Priority', 'Created Date'];
+            const csvRows = [headers.join(',')];
             
-            res.status(200).json({
-                success: true,
-                data: validData.reverse()
-            });
+            for (const row of leadsData) {
+                const values = [
+                    `"${(row.lead_id || '').replace(/"/g, '""')}"`,
+                    `"${(row.company_name || '').replace(/"/g, '""')}"`,
+                    `"${(row.contact_person || '').replace(/"/g, '""')}"`,
+                    `"${(row.status || '').replace(/"/g, '""')}"`,
+                    `"${(row.priority || '').replace(/"/g, '""')}"`,
+                    `"${(row.created_date || '').replace(/"/g, '""')}"`
+                ];
+                csvRows.push(values.join(','));
+            }
+            
+            const csvContent = csvRows.join('\n');
+            const filename = `report_${range}_${new Date().toISOString().split('T')[0]}.csv`;
+            
+            res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+            res.status(200).send(csvContent);
         } catch (error) {
-            console.error('Error fetching revenue trend:', error);
+            console.error('Error exporting report:', error);
             res.status(500).json({
                 success: false,
-                message: 'Error fetching revenue trend',
-                error: error.message
-            });
-        }
-    }
-    
-    async getSalesLeaderboard(req, res) {
-        try {
-            const [leaderboard] = await pool.query(`
-                SELECT 
-                    u.name,
-                    COUNT(DISTINCT l.id) as leads,
-                    COUNT(DISTINCT o.id) as opportunities,
-                    COUNT(DISTINCT ord.id) as orders,
-                    COALESCE(SUM(ord.total_amount), 0) as revenue
-                FROM users u
-                LEFT JOIN leads l ON l.assigned_to = u.id
-                LEFT JOIN opportunities o ON o.assigned_to = u.id
-                LEFT JOIN orders ord ON ord.sales_rep_id = u.id
-                WHERE u.role IN ('salesperson', 'manager')
-                GROUP BY u.id, u.name
-                ORDER BY revenue DESC
-                LIMIT 5
-            `);
-            
-            res.status(200).json({
-                success: true,
-                data: leaderboard
-            });
-        } catch (error) {
-            console.error('Error fetching sales leaderboard:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Error fetching sales leaderboard',
-                error: error.message
-            });
-        }
-    }
-    
-    // New: Get monthly revenue summary
-    async getMonthlyRevenue(req, res) {
-        try {
-            const [revenue] = await pool.query(`
-                SELECT 
-                    DATE_FORMAT(created_at, '%Y-%m') as month,
-                    COALESCE(SUM(total_amount), 0) as revenue,
-                    COUNT(*) as order_count
-                FROM orders
-                WHERE status != 'Cancelled'
-                GROUP BY DATE_FORMAT(created_at, '%Y-%m')
-                ORDER BY month DESC
-            `);
-            
-            res.status(200).json({
-                success: true,
-                data: revenue
-            });
-        } catch (error) {
-            console.error('Error fetching monthly revenue:', error);
-            res.status(500).json({
-                success: false,
-                message: 'Error fetching monthly revenue',
+                message: 'Error exporting report',
                 error: error.message
             });
         }

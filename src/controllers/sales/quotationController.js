@@ -142,7 +142,7 @@ class QuotationController {
             
             res.status(200).json({
                 success: true,
-                data: { ...quotations[0], items }
+                data: { ...quotations[0], products: items }
             });
         } catch (error) {
             console.error('Error fetching quotation:', error);

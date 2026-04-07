@@ -99,12 +99,6 @@ class OpportunityController {
             res.status(200).json({
                 success: true,
                 data: opportunities,
-                pagination: {
-                    page: parseInt(page),
-                    limit: parseInt(limit),
-                    total: countResult[0].total,
-                    pages: Math.ceil(countResult[0].total / limit)
-                }
             });
         } catch (error) {
             console.error('Error fetching opportunities:', error);

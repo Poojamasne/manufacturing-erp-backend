@@ -220,7 +220,7 @@ class LeadController {
 
       const [leads] = await pool.query(query, params);
 
-      // Get total count for pagination
+      
       let countQuery = "SELECT COUNT(*) as total FROM leads WHERE 1=1";
       const countParams = [];
 
@@ -280,12 +280,7 @@ class LeadController {
       res.status(200).json({
         success: true,
         data: leads,
-        pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
-          total: countResult[0].total,
-          pages: Math.ceil(countResult[0].total / limit),
-        },
+        
       });
     } catch (error) {
       console.error("Error fetching leads:", error);
@@ -586,7 +581,6 @@ class LeadController {
     try {
       const { search, page = 1, limit = 50 } = req.query;
 
-      // First get all active products with pagination
       let productQuery = `
             SELECT 
                 p.id as product_id,
@@ -606,7 +600,7 @@ class LeadController {
         productParams.push(`%${search}%`, `%${search}%`);
       }
 
-      // Get total count for pagination
+      
       let countQuery =
         "SELECT COUNT(*) as total FROM products WHERE is_active = 1";
       const countParams = [];
@@ -615,15 +609,7 @@ class LeadController {
         countQuery += ` AND (name LIKE ? OR category LIKE ?)`;
         countParams.push(`%${search}%`, `%${search}%`);
       }
-
       const [countResult] = await pool.query(countQuery, countParams);
-
-      // Add pagination to product query
-      productQuery += ` ORDER BY p.id ASC LIMIT ? OFFSET ?`;
-      productParams.push(
-        parseInt(limit),
-        (parseInt(page) - 1) * parseInt(limit),
-      );
 
       const [products] = await pool.query(productQuery, productParams);
 
@@ -632,12 +618,6 @@ class LeadController {
         return res.status(200).json({
           success: true,
           data: [],
-          pagination: {
-            page: parseInt(page),
-            limit: parseInt(limit),
-            total: 0,
-            pages: 0,
-          },
         });
       }
 
@@ -688,12 +668,6 @@ class LeadController {
       res.status(200).json({
         success: true,
         data: productsWithVariants,
-        pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
-          total: countResult[0].total,
-          pages: Math.ceil(countResult[0].total / limit),
-        },
       });
     } catch (error) {
       console.error("Error fetching products:", error);

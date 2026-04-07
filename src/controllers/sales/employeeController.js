@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 class EmployeeController {
     async getAllEmployees(req, res) {
         try {
-            const { search, is_active, page = 1, limit = 10 } = req.query;
+            const { search, is_active } = req.query;
             
             let query = `
                 SELECT id, user_id, name, email, designation, role, phone, is_active, created_at
@@ -25,37 +25,13 @@ class EmployeeController {
                 params.push(searchTerm, searchTerm, searchTerm);
             }
             
-            query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`;
-            params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
+            query += ` ORDER BY created_at DESC`;
             
             const [employees] = await pool.query(query, params);
             
-            // Get total count with filters
-            let countQuery = 'SELECT COUNT(*) as total FROM users WHERE 1=1';
-            const countParams = [];
-            
-            if (is_active !== undefined && is_active !== '') {
-                countQuery += ` AND is_active = ?`;
-                countParams.push(parseInt(is_active));
-            }
-            
-            if (search) {
-                countQuery += ` AND (name LIKE ? OR email LIKE ? OR user_id LIKE ?)`;
-                const searchTerm = `%${search}%`;
-                countParams.push(searchTerm, searchTerm, searchTerm);
-            }
-            
-            const [countResult] = await pool.query(countQuery, countParams);
-            
             res.status(200).json({
                 success: true,
-                data: employees,
-                pagination: {
-                    page: parseInt(page),
-                    limit: parseInt(limit),
-                    total: countResult[0].total,
-                    pages: Math.ceil(countResult[0].total / limit)
-                }
+                data: employees
             });
         } catch (error) {
             console.error('Error fetching employees:', error);
@@ -136,7 +112,24 @@ class EmployeeController {
             }
             
             const hashedPassword = await bcrypt.hash(password, 10);
-            const userId = 'EMP' + Date.now();
+            
+            // Generate shorter employee ID
+            // Get the last employee ID to determine the next sequential number
+            const [lastEmployee] = await pool.query(
+                "SELECT user_id FROM users WHERE user_id LIKE 'E%' ORDER BY id DESC LIMIT 1"
+            );
+            
+            let nextNumber = 1;
+            if (lastEmployee.length > 0) {
+                const lastId = lastEmployee[0].user_id;
+                const lastNum = parseInt(lastId.substring(1));
+                if (!isNaN(lastNum)) {
+                    nextNumber = lastNum + 1;
+                }
+            }
+            
+            // Format: E001, E002, E003, etc. (supports up to 999 employees)
+            const userId = 'E' + nextNumber.toString().padStart(3, '0');
             
             const [result] = await pool.query(
                 `INSERT INTO users (user_id, name, email, password, designation, role, phone, is_active)

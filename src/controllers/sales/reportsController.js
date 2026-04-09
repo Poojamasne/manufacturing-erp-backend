@@ -7,70 +7,111 @@ class ReportsController {
             
             console.log('Range received:', range);
             
-            // Build date condition based on range
+            // Build date condition and revenue query based on range
             let dateCondition = '';
             let dateParams = [];
             let revenueQuery = '';
             
-            if (range === 'Weekly') {
-                dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
-                revenueQuery = `
-                    SELECT 
-                        DATE_FORMAT(created_at, '%a') as name,
-                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
-                    FROM orders
-                    WHERE status = 'Delivered' ${dateCondition}
-                    GROUP BY DAYOFWEEK(created_at)
-                    ORDER BY DAYOFWEEK(created_at) ASC
-                `;
-            } else if (range === 'Monthly') {
-                dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
-                revenueQuery = `
-                    SELECT 
-                        CONCAT('W', WEEK(created_at, 1) - WEEK(DATE_SUB(created_at, INTERVAL DAYOFMONTH(created_at)-1 DAY), 1) + 1) as name,
-                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
-                    FROM orders
-                    WHERE status = 'Delivered' ${dateCondition}
-                    GROUP BY WEEK(created_at)
-                    ORDER BY MIN(created_at) ASC
-                `;
-            } else if (range === 'Quarterly') {
-                dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
-                revenueQuery = `
-                    SELECT 
-                        DATE_FORMAT(created_at, '%b') as name,
-                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
-                    FROM orders
-                    WHERE status = 'Delivered' ${dateCondition}
-                    GROUP BY MONTH(created_at)
-                    ORDER BY MONTH(created_at) ASC
-                `;
-            } else if (range === 'Yearly') {
-                dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
-                revenueQuery = `
-                    SELECT 
-                        DATE_FORMAT(created_at, '%Y') as name,
-                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
-                    FROM orders
-                    WHERE status = 'Delivered' ${dateCondition}
-                    GROUP BY YEAR(created_at)
-                    ORDER BY YEAR(created_at) ASC
-                `;
-            } else if (range === 'Custom' && startDate && endDate) {
-                dateCondition = `AND DATE(created_at) BETWEEN ? AND ?`;
-                dateParams = [startDate, endDate];
-                revenueQuery = `
-                    SELECT 
-                        DATE_FORMAT(created_at, '%Y-%m-%d') as name,
-                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
-                    FROM orders
-                    WHERE status = 'Delivered' ${dateCondition}
-                    GROUP BY DATE(created_at)
-                    ORDER BY created_at ASC
-                    LIMIT 30
-                `;
+            // Set date condition and revenue query based on range
+            switch(range) {
+                case 'Weekly':
+                    dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+                    revenueQuery = `
+                        SELECT 
+                            DATE_FORMAT(created_at, '%a') as name,
+                            CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                        FROM orders
+                        WHERE status = 'Delivered' ${dateCondition}
+                        GROUP BY DAYOFWEEK(created_at)
+                        ORDER BY DAYOFWEEK(created_at) ASC
+                    `;
+                    break;
+                    
+                case 'Monthly':
+                    dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
+                    revenueQuery = `
+                        SELECT 
+                            CONCAT('W', WEEK(created_at, 1) - WEEK(DATE_SUB(created_at, INTERVAL DAYOFMONTH(created_at)-1 DAY), 1) + 1) as name,
+                            CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                        FROM orders
+                        WHERE status = 'Delivered' ${dateCondition}
+                        GROUP BY WEEK(created_at)
+                        ORDER BY MIN(created_at) ASC
+                    `;
+                    break;
+                    
+                case 'Quarterly':
+                    dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
+                    revenueQuery = `
+                        SELECT 
+                            DATE_FORMAT(created_at, '%b') as name,
+                            CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                        FROM orders
+                        WHERE status = 'Delivered' ${dateCondition}
+                        GROUP BY MONTH(created_at)
+                        ORDER BY MONTH(created_at) ASC
+                    `;
+                    break;
+                    
+                case 'Yearly':
+                    dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
+                    revenueQuery = `
+                        SELECT 
+                            DATE_FORMAT(created_at, '%Y') as name,
+                            CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                        FROM orders
+                        WHERE status = 'Delivered' ${dateCondition}
+                        GROUP BY YEAR(created_at)
+                        ORDER BY YEAR(created_at) ASC
+                    `;
+                    break;
+                    
+                case 'Custom':
+                    if (startDate && endDate) {
+                        dateCondition = `AND DATE(created_at) BETWEEN ? AND ?`;
+                        dateParams = [startDate, endDate];
+                        revenueQuery = `
+                            SELECT 
+                                DATE_FORMAT(created_at, '%Y-%m-%d') as name,
+                                CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                            FROM orders
+                            WHERE status = 'Delivered' ${dateCondition}
+                            GROUP BY DATE(created_at)
+                            ORDER BY created_at ASC
+                            LIMIT 30
+                        `;
+                    } else {
+                        // Default to yearly if custom dates not provided
+                        dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
+                        revenueQuery = `
+                            SELECT 
+                                DATE_FORMAT(created_at, '%Y') as name,
+                                CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                            FROM orders
+                            WHERE status = 'Delivered' ${dateCondition}
+                            GROUP BY YEAR(created_at)
+                            ORDER BY YEAR(created_at) ASC
+                        `;
+                    }
+                    break;
+                    
+                default:
+                    // Default to yearly
+                    dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
+                    revenueQuery = `
+                        SELECT 
+                            DATE_FORMAT(created_at, '%Y') as name,
+                            CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                        FROM orders
+                        WHERE status = 'Delivered' ${dateCondition}
+                        GROUP BY YEAR(created_at)
+                        ORDER BY YEAR(created_at) ASC
+                    `;
             }
             
+            console.log('Revenue Query:', revenueQuery);
+            
+            // Execute revenue query
             const [revenueData] = await pool.query(revenueQuery, dateParams);
             console.log('Revenue Data:', JSON.stringify(revenueData, null, 2));
             
@@ -145,11 +186,15 @@ class ReportsController {
                     CAST(COALESCE(SUM(oi.total_price), 0) AS DECIMAL(10,2)) as revenue
                 FROM order_items oi
                 INNER JOIN orders o ON oi.order_id = o.id
-                WHERE o.status = 'Delivered' ${dateCondition.replace(/created_at/g, 'o.created_at')}
-                GROUP BY oi.product_name
-                ORDER BY sold DESC
-                LIMIT 5
+                WHERE o.status = 'Delivered' 
             `;
+            
+            // Add date condition to product query
+            if (dateCondition) {
+                let orderDateCond = dateCondition.replace(/created_at/g, 'o.created_at');
+                productQuery += ` ${orderDateCond}`;
+            }
+            productQuery += ` GROUP BY oi.product_name ORDER BY sold DESC LIMIT 5`;
             
             const [productData] = await pool.query(productQuery, dateParams);
             
@@ -173,12 +218,17 @@ class ReportsController {
                     ) as conversion,
                     CAST(COALESCE(SUM(o.total_amount), 0) AS DECIMAL(10,2)) as revenue
                 FROM leads l
-                LEFT JOIN orders o ON l.company_name = o.customer_name AND o.status = 'Delivered' ${dateCondition.replace(/created_at/g, 'o.created_at')}
+                LEFT JOIN orders o ON l.company_name = o.customer_name AND o.status = 'Delivered'
                 LEFT JOIN users u ON l.assigned_to = u.id
-                GROUP BY l.assigned_to, u.name
-                ORDER BY revenue DESC
-                LIMIT 10
+                WHERE 1=1
             `;
+            
+            // Add date condition to leaderboard query
+            if (dateCondition) {
+                let orderDateCond = dateCondition.replace(/created_at/g, 'o.created_at');
+                leaderboardQuery += ` ${orderDateCond}`;
+            }
+            leaderboardQuery += ` GROUP BY l.assigned_to, u.name ORDER BY revenue DESC LIMIT 10`;
             
             const [leaderboardData] = await pool.query(leaderboardQuery, dateParams);
             
@@ -189,12 +239,7 @@ class ReportsController {
                 revenue: `₹${((parseFloat(rep.revenue) || 0) / 100000).toFixed(1)}L`
             }));
             
-            // Log the response for debugging
-            console.log(`Sending response for ${range}:`);
-            console.log(`- Revenue Data: ${revenueData.length} items`);
-            console.log(`- Total Revenue: ${formattedRevenue}`);
-            console.log(`- Total Orders: ${totalOrders}`);
-            
+            // Send response
             res.status(200).json({
                 success: true,
                 data: {
@@ -240,6 +285,8 @@ class ReportsController {
             } else if (range === 'Custom' && startDate && endDate) {
                 dateCondition = `AND DATE(created_at) BETWEEN ? AND ?`;
                 dateParams = [startDate, endDate];
+            } else {
+                dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
             }
             
             const [ordersData] = await pool.query(`

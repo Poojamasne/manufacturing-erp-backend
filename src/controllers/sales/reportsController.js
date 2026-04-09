@@ -5,17 +5,16 @@ class ReportsController {
         try {
             const { range = 'Yearly', startDate, endDate } = req.query;
             
-            console.log('=========================================');
             console.log('Range received:', range);
-            console.log('StartDate:', startDate);
-            console.log('EndDate:', endDate);
-            console.log('=========================================');
             
-            // Build date condition based on range
+            // Initialize variables
             let dateCondition = '';
             let dateParams = [];
             let revenueQuery = '';
+            let groupByClause = '';
+            let orderByClause = '';
             
+            // Set date condition based on range
             if (range === 'Weekly') {
                 dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
                 revenueQuery = `
@@ -27,7 +26,6 @@ class ReportsController {
                     GROUP BY DAYOFWEEK(created_at)
                     ORDER BY DAYOFWEEK(created_at) ASC
                 `;
-                console.log('Weekly Query - Date Condition:', dateCondition);
             } 
             else if (range === 'Monthly') {
                 dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
@@ -40,7 +38,6 @@ class ReportsController {
                     GROUP BY DATE(created_at)
                     ORDER BY created_at ASC
                 `;
-                console.log('Monthly Query - Date Condition:', dateCondition);
             } 
             else if (range === 'Quarterly') {
                 dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
@@ -53,7 +50,6 @@ class ReportsController {
                     GROUP BY MONTH(created_at)
                     ORDER BY MONTH(created_at) ASC
                 `;
-                console.log('Quarterly Query - Date Condition:', dateCondition);
             } 
             else if (range === 'Yearly') {
                 dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
@@ -66,7 +62,6 @@ class ReportsController {
                     GROUP BY YEAR(created_at)
                     ORDER BY YEAR(created_at) ASC
                 `;
-                console.log('Yearly Query - Date Condition:', dateCondition);
             } 
             else if (range === 'Custom' && startDate && endDate) {
                 dateCondition = `AND DATE(created_at) BETWEEN ? AND ?`;
@@ -81,16 +76,30 @@ class ReportsController {
                     ORDER BY created_at ASC
                     LIMIT 30
                 `;
-                console.log('Custom Query - Date Condition:', dateCondition);
             }
             
-            console.log('Final Revenue Query:', revenueQuery);
-            console.log('Date Params:', dateParams);
+            // Check if query is empty
+            if (!revenueQuery) {
+                console.error('Revenue query is empty for range:', range);
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid range parameter',
+                    error: `No query defined for range: ${range}`
+                });
+            }
+            
+            console.log('Executing revenue query for range:', range);
+            console.log('Date Condition:', dateCondition);
             
             // Execute revenue query
             const [revenueData] = await pool.query(revenueQuery, dateParams);
-            console.log('Revenue Data Count:', revenueData.length);
-            console.log('Revenue Data:', JSON.stringify(revenueData, null, 2));
+            console.log('Revenue data count:', revenueData.length);
+            
+            // If no revenue data, provide default
+            let finalRevenueData = revenueData;
+            if (revenueData.length === 0) {
+                finalRevenueData = [{ name: 'No Data', val: 0 }];
+            }
             
             // 2. Get Lead Sources Distribution
             const [sourceData] = await pool.query(`
@@ -107,12 +116,10 @@ class ReportsController {
                 SELECT 
                     CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as total_revenue,
                     COUNT(*) as total_orders,
-                    AVG(total_amount) as avg_order_value
+                    COALESCE(AVG(total_amount), 0) as avg_order_value
                 FROM orders
                 WHERE status = 'Delivered' ${dateCondition}
             `;
-            
-            console.log('KPI Orders Query:', ordersQuery);
             
             const [ordersResult] = await pool.query(ordersQuery, dateParams);
             
@@ -127,11 +134,7 @@ class ReportsController {
             const avgOrderValue = parseFloat(ordersResult[0]?.avg_order_value || 0);
             const conversionRate = totalLeads > 0 ? (totalOrders / totalLeads) * 100 : 0;
             
-            console.log(`${range} RESULTS:`);
-            console.log(`- Date Condition: ${dateCondition}`);
-            console.log(`- Total Revenue: ${totalRevenue}`);
-            console.log(`- Total Orders: ${totalOrders}`);
-            console.log(`- Avg Order Value: ${avgOrderValue}`);
+            console.log(`${range} - Revenue: ${totalRevenue}, Orders: ${totalOrders}`);
             
             // Format revenue display
             let formattedRevenue = '₹0';
@@ -161,12 +164,11 @@ class ReportsController {
                 formattedAvgValue = `₹${avgOrderValue.toFixed(0)}`;
             }
             
-            // 4. Get Product Performance with date filter
+            // 4. Get Product Performance
             let productQuery = `
                 SELECT 
                     oi.product_name as name,
-                    CAST(COALESCE(SUM(oi.quantity), 0) AS UNSIGNED) as sold,
-                    CAST(COALESCE(SUM(oi.total_price), 0) AS DECIMAL(10,2)) as revenue
+                    CAST(COALESCE(SUM(oi.quantity), 0) AS UNSIGNED) as sold
                 FROM order_items oi
                 INNER JOIN orders o ON oi.order_id = o.id
                 WHERE o.status = 'Delivered' ${dateCondition.replace(/created_at/g, 'o.created_at')}
@@ -184,17 +186,11 @@ class ReportsController {
                 prod: Math.round((parseInt(product.sold) || 0) * 1.1)
             }));
             
-            // 5. Get Sales Leaderboard with date filter
+            // 5. Get Sales Leaderboard
             let leaderboardQuery = `
                 SELECT 
                     COALESCE(u.name, 'Unassigned') as name,
                     COUNT(DISTINCT l.id) as leads,
-                    COUNT(DISTINCT CASE WHEN o.status = 'Delivered' THEN o.id END) as completed_orders,
-                    ROUND(
-                        IFNULL(
-                            (COUNT(DISTINCT CASE WHEN o.status = 'Delivered' THEN o.id END) / NULLIF(COUNT(DISTINCT l.id), 0)) * 100, 0
-                        ), 1
-                    ) as conversion,
                     CAST(COALESCE(SUM(o.total_amount), 0) AS DECIMAL(10,2)) as revenue
                 FROM leads l
                 LEFT JOIN orders o ON l.company_name = o.customer_name AND o.status = 'Delivered' ${dateCondition.replace(/created_at/g, 'o.created_at')}
@@ -209,7 +205,7 @@ class ReportsController {
             const formattedLeaderboard = leaderboardData.map(rep => ({
                 name: rep.name || 'Unassigned',
                 leads: parseInt(rep.leads) || 0,
-                conversion: `${parseFloat(rep.conversion) || 0}%`,
+                conversion: '0%',
                 revenue: `₹${((parseFloat(rep.revenue) || 0) / 100000).toFixed(1)}L`
             }));
             
@@ -217,7 +213,7 @@ class ReportsController {
             res.status(200).json({
                 success: true,
                 data: {
-                    revenue: revenueData.length > 0 ? revenueData : [{ name: 'No Data', val: 0 }],
+                    revenue: finalRevenueData,
                     sources: sourceData.length > 0 ? sourceData : [{ name: 'No Data', value: 100 }],
                     kpis: {
                         rev: formattedRevenue,
@@ -267,12 +263,8 @@ class ReportsController {
                 SELECT 
                     order_id,
                     customer_name,
-                    email,
-                    phone,
-                    status,
                     total_amount,
-                    DATE_FORMAT(created_at, '%Y-%m-%d') as created_date,
-                    (SELECT name FROM users WHERE id = sales_rep_id) as sales_rep_name
+                    DATE_FORMAT(created_at, '%Y-%m-%d') as created_date
                 FROM orders
                 WHERE status = 'Delivered' ${dateCondition}
                 ORDER BY created_at DESC
@@ -285,19 +277,15 @@ class ReportsController {
                 });
             }
             
-            const headers = ['Order ID', 'Customer Name', 'Email', 'Phone', 'Status', 'Total Amount', 'Created Date', 'Sales Rep'];
+            const headers = ['Order ID', 'Customer Name', 'Total Amount', 'Created Date'];
             const csvRows = [headers.join(',')];
             
             for (const row of ordersData) {
                 const values = [
                     `"${(row.order_id || '').replace(/"/g, '""')}"`,
                     `"${(row.customer_name || '').replace(/"/g, '""')}"`,
-                    `"${(row.email || '').replace(/"/g, '""')}"`,
-                    `"${(row.phone || '').replace(/"/g, '""')}"`,
-                    `"${(row.status || '').replace(/"/g, '""')}"`,
                     `${row.total_amount || 0}`,
-                    `"${(row.created_date || '').replace(/"/g, '""')}"`,
-                    `"${(row.sales_rep_name || 'Unassigned').replace(/"/g, '""')}"`
+                    `"${(row.created_date || '').replace(/"/g, '""')}"`
                 ];
                 csvRows.push(values.join(','));
             }

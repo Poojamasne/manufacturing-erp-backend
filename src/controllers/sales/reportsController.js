@@ -11,8 +11,10 @@ class ReportsController {
             let dateCondition = '';
             let dateParams = [];
             let revenueQuery = '';
+            let groupFormat = '';
+            let orderBy = '';
             
-            // Set date condition and revenue query based on range
+            // Set date condition and grouping based on range
             switch(range) {
                 case 'Weekly':
                     dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
@@ -31,12 +33,12 @@ class ReportsController {
                     dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
                     revenueQuery = `
                         SELECT 
-                            CONCAT('W', WEEK(created_at, 1) - WEEK(DATE_SUB(created_at, INTERVAL DAYOFMONTH(created_at)-1 DAY), 1) + 1) as name,
+                            DATE_FORMAT(created_at, '%Y-%m-%d') as name,
                             CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
                         FROM orders
                         WHERE status = 'Delivered' ${dateCondition}
-                        GROUP BY WEEK(created_at)
-                        ORDER BY MIN(created_at) ASC
+                        GROUP BY DATE(created_at)
+                        ORDER BY created_at ASC
                     `;
                     break;
                     
@@ -81,7 +83,6 @@ class ReportsController {
                             LIMIT 30
                         `;
                     } else {
-                        // Default to yearly if custom dates not provided
                         dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
                         revenueQuery = `
                             SELECT 
@@ -96,7 +97,6 @@ class ReportsController {
                     break;
                     
                 default:
-                    // Default to yearly
                     dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
                     revenueQuery = `
                         SELECT 
@@ -109,13 +109,14 @@ class ReportsController {
                     `;
             }
             
+            console.log('Date Condition:', dateCondition);
             console.log('Revenue Query:', revenueQuery);
             
             // Execute revenue query
             const [revenueData] = await pool.query(revenueQuery, dateParams);
             console.log('Revenue Data:', JSON.stringify(revenueData, null, 2));
             
-            // 2. Get Lead Sources Distribution (all leads)
+            // 2. Get Lead Sources Distribution (all leads - no date filter)
             const [sourceData] = await pool.query(`
                 SELECT 
                     COALESCE(lead_source, 'Other') as name,
@@ -135,9 +136,11 @@ class ReportsController {
                 WHERE status = 'Delivered' ${dateCondition}
             `;
             
+            console.log('Orders Query:', ordersQuery);
+            
             const [ordersResult] = await pool.query(ordersQuery, dateParams);
             
-            // Total leads (all time)
+            // Total leads (all time - keep as is for consistency)
             const [totalLeadsResult] = await pool.query(`
                 SELECT COUNT(DISTINCT id) as total_leads FROM leads
             `);
@@ -148,7 +151,7 @@ class ReportsController {
             const avgOrderValue = parseFloat(ordersResult[0]?.avg_order_value || 0);
             const conversionRate = totalLeads > 0 ? (totalOrders / totalLeads) * 100 : 0;
             
-            console.log(`${range} - Revenue: ${totalRevenue}, Orders: ${totalOrders}, Avg: ${avgOrderValue}`);
+            console.log(`${range} - Revenue: ${totalRevenue}, Orders: ${totalOrders}, Date Condition: ${dateCondition}`);
             
             // Format revenue display
             let formattedRevenue = '₹0';
@@ -189,7 +192,6 @@ class ReportsController {
                 WHERE o.status = 'Delivered' 
             `;
             
-            // Add date condition to product query
             if (dateCondition) {
                 let orderDateCond = dateCondition.replace(/created_at/g, 'o.created_at');
                 productQuery += ` ${orderDateCond}`;
@@ -223,7 +225,6 @@ class ReportsController {
                 WHERE 1=1
             `;
             
-            // Add date condition to leaderboard query
             if (dateCondition) {
                 let orderDateCond = dateCondition.replace(/created_at/g, 'o.created_at');
                 leaderboardQuery += ` ${orderDateCond}`;

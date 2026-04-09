@@ -10,43 +10,66 @@ class ReportsController {
             // Build date condition based on range
             let dateCondition = '';
             let dateParams = [];
-            let groupFormat = '';
-            let orderBy = '';
+            let revenueQuery = '';
             
-            // Set grouping format based on range
             if (range === 'Weekly') {
                 dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
-                groupFormat = `DATE_FORMAT(created_at, '%a')`; // Mon, Tue, Wed...
-                orderBy = `DAYOFWEEK(created_at) ASC`;
+                revenueQuery = `
+                    SELECT 
+                        DATE_FORMAT(created_at, '%a') as name,
+                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                    FROM orders
+                    WHERE status = 'Delivered' ${dateCondition}
+                    GROUP BY DAYOFWEEK(created_at)
+                    ORDER BY DAYOFWEEK(created_at) ASC
+                `;
             } else if (range === 'Monthly') {
                 dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
-                groupFormat = `CONCAT('Week ', WEEK(created_at, 1) - WEEK(DATE_SUB(created_at, INTERVAL DAYOFMONTH(created_at)-1 DAY), 1) + 1)`;
-                orderBy = `MIN(created_at) ASC`;
+                revenueQuery = `
+                    SELECT 
+                        CONCAT('W', WEEK(created_at, 1) - WEEK(DATE_SUB(created_at, INTERVAL DAYOFMONTH(created_at)-1 DAY), 1) + 1) as name,
+                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                    FROM orders
+                    WHERE status = 'Delivered' ${dateCondition}
+                    GROUP BY WEEK(created_at)
+                    ORDER BY MIN(created_at) ASC
+                `;
             } else if (range === 'Quarterly') {
                 dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
-                groupFormat = `DATE_FORMAT(created_at, '%b')`; // Jan, Feb, Mar...
-                orderBy = `MONTH(created_at) ASC`;
+                revenueQuery = `
+                    SELECT 
+                        DATE_FORMAT(created_at, '%b') as name,
+                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                    FROM orders
+                    WHERE status = 'Delivered' ${dateCondition}
+                    GROUP BY MONTH(created_at)
+                    ORDER BY MONTH(created_at) ASC
+                `;
             } else if (range === 'Yearly') {
                 dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
-                groupFormat = `DATE_FORMAT(created_at, '%Y')`; // 2024, 2025, 2026...
-                orderBy = `YEAR(created_at) ASC`;
+                revenueQuery = `
+                    SELECT 
+                        DATE_FORMAT(created_at, '%Y') as name,
+                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                    FROM orders
+                    WHERE status = 'Delivered' ${dateCondition}
+                    GROUP BY YEAR(created_at)
+                    ORDER BY YEAR(created_at) ASC
+                `;
             } else if (range === 'Custom' && startDate && endDate) {
                 dateCondition = `AND DATE(created_at) BETWEEN ? AND ?`;
                 dateParams = [startDate, endDate];
-                groupFormat = `DATE_FORMAT(created_at, '%Y-%m-%d')`;
-                orderBy = `created_at ASC`;
+                revenueQuery = `
+                    SELECT 
+                        DATE_FORMAT(created_at, '%Y-%m-%d') as name,
+                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                    FROM orders
+                    WHERE status = 'Delivered' ${dateCondition}
+                    GROUP BY DATE(created_at)
+                    ORDER BY created_at ASC
+                    LIMIT 30
+                `;
             }
-            
-            // 1. Get Revenue Trend Data with proper grouping
-            let revenueQuery = `
-                SELECT 
-                    ${groupFormat} as name,
-                    CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
-                FROM orders
-                WHERE status = 'Delivered' ${dateCondition}
-                GROUP BY ${groupFormat}
-                ORDER BY ${orderBy}
-            `;
             
             const [revenueData] = await pool.query(revenueQuery, dateParams);
             console.log('Revenue Data:', JSON.stringify(revenueData, null, 2));

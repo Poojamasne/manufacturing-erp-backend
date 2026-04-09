@@ -3,30 +3,24 @@ const pool = require('../../config/database');
 class ReportsController {
     async getReportData(req, res) {
         try {
-            const { range = 'Monthly', startDate, endDate } = req.query;
+            const { range = 'Yearly', startDate, endDate } = req.query;
             
             console.log('Range received:', range);
             
-            // Build date conditions for different tables
+            // Build date condition for orders only
             let orderDateCondition = '';
-            let leadDateCondition = '';
             let dateParams = [];
             
             if (range === 'Weekly') {
                 orderDateCondition = `AND o.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
-                leadDateCondition = `AND l.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
             } else if (range === 'Monthly') {
                 orderDateCondition = `AND o.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
-                leadDateCondition = `AND l.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
             } else if (range === 'Quarterly') {
                 orderDateCondition = `AND o.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
-                leadDateCondition = `AND l.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
             } else if (range === 'Yearly') {
                 orderDateCondition = `AND o.created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
-                leadDateCondition = `AND l.created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
             } else if (range === 'Custom' && startDate && endDate) {
                 orderDateCondition = `AND DATE(o.created_at) BETWEEN ? AND ?`;
-                leadDateCondition = `AND DATE(l.created_at) BETWEEN ? AND ?`;
                 dateParams = [startDate, endDate];
             }
             
@@ -89,32 +83,22 @@ class ReportsController {
             const [revenueData] = await pool.query(revenueQuery, dateParams);
             console.log('Revenue Data count:', revenueData.length);
             
-            // 2. Get Lead Sources Distribution (WITH date filter) - using created_at
-            let sourceQuery = `
+            // 2. Get Lead Sources Distribution (NO date filter - show all leads)
+            const [sourceData] = await pool.query(`
                 SELECT 
-                    COALESCE(l.lead_source, 'Other') as name,
+                    COALESCE(lead_source, 'Other') as name,
                     COUNT(*) as value
-                FROM leads l
-                WHERE 1=1
-            `;
-            
-            // Only add date condition if not empty
-            if (leadDateCondition) {
-                sourceQuery += ` ${leadDateCondition}`;
-            }
-            
-            sourceQuery += ` GROUP BY l.lead_source ORDER BY value DESC`;
-            
-            const [sourceData] = await pool.query(sourceQuery, dateParams);
+                FROM leads
+                GROUP BY lead_source
+                ORDER BY value DESC
+            `);
             console.log('Source Data:', sourceData);
             
-            // 3. Get KPI Statistics (WITH date filters)
-            // Get total leads count with date filter
-            let leadsQuery = `SELECT COUNT(DISTINCT id) as total_leads FROM leads WHERE 1=1`;
-            if (leadDateCondition) {
-                leadsQuery += ` ${leadDateCondition}`;
-            }
-            const [totalLeadsResult] = await pool.query(leadsQuery, dateParams);
+            // 3. Get KPI Statistics
+            // Get total leads count (all leads)
+            const [totalLeadsResult] = await pool.query(`
+                SELECT COUNT(DISTINCT id) as total_leads FROM leads
+            `);
             
             // Get orders data with date filter
             let ordersQuery = `
@@ -191,7 +175,7 @@ class ReportsController {
             }));
             console.log('Products count:', productsWithTargets.length);
             
-            // 5. Get Sales Leaderboard (WITH date filters)
+            // 5. Get Sales Leaderboard (WITHOUT date filter for leads)
             let leaderboardQuery = `
                 SELECT 
                     COALESCE(u.name, 'Unassigned') as name,
@@ -206,24 +190,12 @@ class ReportsController {
                 FROM leads l
                 LEFT JOIN orders o ON l.company_name = o.customer_name AND o.status = 'Delivered'
                 LEFT JOIN users u ON l.assigned_to = u.id
-                WHERE 1=1
+                GROUP BY l.assigned_to, u.name
+                ORDER BY revenue DESC
+                LIMIT 10
             `;
             
-            // Add lead date condition
-            if (leadDateCondition) {
-                leaderboardQuery += ` ${leadDateCondition}`;
-            }
-            
-            // Add order date condition (for the orders join)
-            if (orderDateCondition) {
-                leaderboardQuery += ` AND o.created_at ${orderDateCondition.replace('AND o.created_at', '')}`;
-            }
-            
-            leaderboardQuery += ` GROUP BY l.assigned_to, u.name ORDER BY revenue DESC LIMIT 10`;
-            
-            // For leaderboard, we need to pass date params twice (once for leads, once for orders)
-            const leaderboardParams = [...dateParams, ...dateParams];
-            const [leaderboardData] = await pool.query(leaderboardQuery, leaderboardParams);
+            const [leaderboardData] = await pool.query(leaderboardQuery);
             
             const formattedLeaderboard = leaderboardData.map(rep => ({
                 name: rep.name || 'Unassigned',
@@ -261,7 +233,7 @@ class ReportsController {
     // Export report as CSV
     async exportReport(req, res) {
         try {
-            const { range = 'Monthly', startDate, endDate } = req.query;
+            const { range = 'Yearly', startDate, endDate } = req.query;
             
             let orderDateCondition = '';
             let dateParams = [];

@@ -5,7 +5,7 @@ const { authenticate } = require('../../middleware/auth');
 
 router.use(authenticate);
 
-router.get('/reports', reportsController.getReportData);
-router.get('/reports/export', reportsController.exportReport);
+router.get('/data', reportsController.getReportData);  
+router.get('/export', reportsController.exportReport);  
 
 module.exports = router;

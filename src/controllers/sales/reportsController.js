@@ -89,34 +89,46 @@ class ReportsController {
             const [revenueData] = await pool.query(revenueQuery, dateParams);
             console.log('Revenue Data count:', revenueData.length);
             
-            // 2. Get Lead Sources Distribution (WITH date filter)
-            const [sourceData] = await pool.query(`
+            // 2. Get Lead Sources Distribution (WITH date filter) - using created_at
+            let sourceQuery = `
                 SELECT 
                     COALESCE(l.lead_source, 'Other') as name,
                     COUNT(*) as value
                 FROM leads l
-                WHERE 1=1 ${leadDateCondition}
-                GROUP BY l.lead_source
-                ORDER BY value DESC
-            `, dateParams);
+                WHERE 1=1
+            `;
+            
+            // Only add date condition if not empty
+            if (leadDateCondition) {
+                sourceQuery += ` ${leadDateCondition}`;
+            }
+            
+            sourceQuery += ` GROUP BY l.lead_source ORDER BY value DESC`;
+            
+            const [sourceData] = await pool.query(sourceQuery, dateParams);
             console.log('Source Data:', sourceData);
             
             // 3. Get KPI Statistics (WITH date filters)
-            // For KPI, we need to filter both leads and orders by date
-            const [totalLeadsResult] = await pool.query(`
-                SELECT COUNT(DISTINCT id) as total_leads
-                FROM leads
-                WHERE 1=1 ${leadDateCondition}
-            `, dateParams);
+            // Get total leads count with date filter
+            let leadsQuery = `SELECT COUNT(DISTINCT id) as total_leads FROM leads WHERE 1=1`;
+            if (leadDateCondition) {
+                leadsQuery += ` ${leadDateCondition}`;
+            }
+            const [totalLeadsResult] = await pool.query(leadsQuery, dateParams);
             
-            const [ordersResult] = await pool.query(`
+            // Get orders data with date filter
+            let ordersQuery = `
                 SELECT 
                     CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as total_revenue,
                     COUNT(*) as total_orders,
                     AVG(total_amount) as avg_order_value
                 FROM orders
-                WHERE status = 'Delivered' ${orderDateCondition}
-            `, dateParams);
+                WHERE status = 'Delivered'
+            `;
+            if (orderDateCondition) {
+                ordersQuery += ` ${orderDateCondition}`;
+            }
+            const [ordersResult] = await pool.query(ordersQuery, dateParams);
             
             const totalLeads = parseInt(totalLeadsResult[0]?.total_leads || 0);
             const totalRevenue = parseFloat(ordersResult[0]?.total_revenue || 0);
@@ -155,18 +167,21 @@ class ReportsController {
             }
             
             // 4. Get Product Performance (WITH date filter)
-            const [productData] = await pool.query(`
+            let productQuery = `
                 SELECT 
                     oi.product_name as name,
                     CAST(COALESCE(SUM(oi.quantity), 0) AS UNSIGNED) as sold,
                     CAST(COALESCE(SUM(oi.total_price), 0) AS DECIMAL(10,2)) as revenue
                 FROM order_items oi
                 INNER JOIN orders o ON oi.order_id = o.id
-                WHERE o.status = 'Delivered' ${orderDateCondition}
-                GROUP BY oi.product_name
-                ORDER BY sold DESC
-                LIMIT 5
-            `, dateParams);
+                WHERE o.status = 'Delivered'
+            `;
+            if (orderDateCondition) {
+                productQuery += ` ${orderDateCondition}`;
+            }
+            productQuery += ` GROUP BY oi.product_name ORDER BY sold DESC LIMIT 5`;
+            
+            const [productData] = await pool.query(productQuery, dateParams);
             
             const productsWithTargets = productData.map(product => ({
                 name: product.name.length > 15 ? product.name.substring(0, 12) + '...' : product.name,
@@ -177,7 +192,7 @@ class ReportsController {
             console.log('Products count:', productsWithTargets.length);
             
             // 5. Get Sales Leaderboard (WITH date filters)
-            const [leaderboardData] = await pool.query(`
+            let leaderboardQuery = `
                 SELECT 
                     COALESCE(u.name, 'Unassigned') as name,
                     COUNT(DISTINCT l.id) as leads,
@@ -189,13 +204,26 @@ class ReportsController {
                     ) as conversion,
                     CAST(COALESCE(SUM(o.total_amount), 0) AS DECIMAL(10,2)) as revenue
                 FROM leads l
-                LEFT JOIN orders o ON l.company_name = o.customer_name AND o.status = 'Delivered' ${orderDateCondition}
+                LEFT JOIN orders o ON l.company_name = o.customer_name AND o.status = 'Delivered'
                 LEFT JOIN users u ON l.assigned_to = u.id
-                WHERE 1=1 ${leadDateCondition}
-                GROUP BY l.assigned_to, u.name
-                ORDER BY revenue DESC
-                LIMIT 10
-            `, [...dateParams, ...dateParams]);
+                WHERE 1=1
+            `;
+            
+            // Add lead date condition
+            if (leadDateCondition) {
+                leaderboardQuery += ` ${leadDateCondition}`;
+            }
+            
+            // Add order date condition (for the orders join)
+            if (orderDateCondition) {
+                leaderboardQuery += ` AND o.created_at ${orderDateCondition.replace('AND o.created_at', '')}`;
+            }
+            
+            leaderboardQuery += ` GROUP BY l.assigned_to, u.name ORDER BY revenue DESC LIMIT 10`;
+            
+            // For leaderboard, we need to pass date params twice (once for leads, once for orders)
+            const leaderboardParams = [...dateParams, ...dateParams];
+            const [leaderboardData] = await pool.query(leaderboardQuery, leaderboardParams);
             
             const formattedLeaderboard = leaderboardData.map(rep => ({
                 name: rep.name || 'Unassigned',

@@ -7,83 +7,51 @@ class ReportsController {
             
             console.log('Range received:', range);
             
-            // Build date condition for orders
+            // Build date condition based on range
             let dateCondition = '';
             let dateParams = [];
+            let groupFormat = '';
+            let orderBy = '';
             
+            // Set grouping format based on range
             if (range === 'Weekly') {
                 dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+                groupFormat = `DATE_FORMAT(created_at, '%a')`; // Mon, Tue, Wed...
+                orderBy = `DAYOFWEEK(created_at) ASC`;
             } else if (range === 'Monthly') {
                 dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
+                groupFormat = `CONCAT('Week ', WEEK(created_at, 1) - WEEK(DATE_SUB(created_at, INTERVAL DAYOFMONTH(created_at)-1 DAY), 1) + 1)`;
+                orderBy = `MIN(created_at) ASC`;
             } else if (range === 'Quarterly') {
                 dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
+                groupFormat = `DATE_FORMAT(created_at, '%b')`; // Jan, Feb, Mar...
+                orderBy = `MONTH(created_at) ASC`;
             } else if (range === 'Yearly') {
                 dateCondition = `AND created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
+                groupFormat = `DATE_FORMAT(created_at, '%Y')`; // 2024, 2025, 2026...
+                orderBy = `YEAR(created_at) ASC`;
             } else if (range === 'Custom' && startDate && endDate) {
                 dateCondition = `AND DATE(created_at) BETWEEN ? AND ?`;
                 dateParams = [startDate, endDate];
+                groupFormat = `DATE_FORMAT(created_at, '%Y-%m-%d')`;
+                orderBy = `created_at ASC`;
             }
             
-            // 1. Get Revenue Trend Data
-            let revenueQuery = '';
-            
-            if (range === 'Weekly') {
-                revenueQuery = `
-                    SELECT 
-                        DATE_FORMAT(created_at, '%a') as name,
-                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
-                    FROM orders
-                    WHERE status = 'Delivered' ${dateCondition}
-                    GROUP BY DAYOFWEEK(created_at)
-                    ORDER BY DAYOFWEEK(created_at) ASC
-                `;
-            } else if (range === 'Monthly') {
-                revenueQuery = `
-                    SELECT 
-                        CONCAT('W', WEEK(created_at, 1) - WEEK(DATE_SUB(created_at, INTERVAL DAYOFMONTH(created_at)-1 DAY), 1) + 1) as name,
-                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
-                    FROM orders
-                    WHERE status = 'Delivered' ${dateCondition}
-                    GROUP BY WEEK(created_at)
-                    ORDER BY MIN(created_at) ASC
-                `;
-            } else if (range === 'Quarterly') {
-                revenueQuery = `
-                    SELECT 
-                        DATE_FORMAT(created_at, '%b') as name,
-                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
-                    FROM orders
-                    WHERE status = 'Delivered' ${dateCondition}
-                    GROUP BY MONTH(created_at)
-                    ORDER BY MONTH(created_at) ASC
-                `;
-            } else if (range === 'Yearly') {
-                revenueQuery = `
-                    SELECT 
-                        DATE_FORMAT(created_at, '%Y') as name,
-                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
-                    FROM orders
-                    WHERE status = 'Delivered' ${dateCondition}
-                    GROUP BY YEAR(created_at)
-                    ORDER BY YEAR(created_at) ASC
-                `;
-            } else {
-                revenueQuery = `
-                    SELECT 
-                        DATE_FORMAT(created_at, '%Y-%m-%d') as name,
-                        CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
-                    FROM orders
-                    WHERE status = 'Delivered' ${dateCondition}
-                    GROUP BY DATE(created_at)
-                    ORDER BY created_at ASC
-                    LIMIT 30
-                `;
-            }
+            // 1. Get Revenue Trend Data with proper grouping
+            let revenueQuery = `
+                SELECT 
+                    ${groupFormat} as name,
+                    CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as val
+                FROM orders
+                WHERE status = 'Delivered' ${dateCondition}
+                GROUP BY ${groupFormat}
+                ORDER BY ${orderBy}
+            `;
             
             const [revenueData] = await pool.query(revenueQuery, dateParams);
-            console.log('Revenue Data:', revenueData);
+            console.log('Revenue Data:', JSON.stringify(revenueData, null, 2));
             
-            // 2. Get Lead Sources Distribution (all leads - no date filter)
+            // 2. Get Lead Sources Distribution (all leads)
             const [sourceData] = await pool.query(`
                 SELECT 
                     COALESCE(lead_source, 'Other') as name,
@@ -93,21 +61,19 @@ class ReportsController {
                 ORDER BY value DESC
             `);
             
-            // 3. Get KPI Statistics WITH DATE FILTER - THIS IS THE KEY FIX
+            // 3. Get KPI Statistics WITH DATE FILTER
             let ordersQuery = `
                 SELECT 
                     CAST(COALESCE(SUM(total_amount), 0) AS DECIMAL(10,2)) as total_revenue,
                     COUNT(*) as total_orders,
                     AVG(total_amount) as avg_order_value
                 FROM orders
-                WHERE status = 'Delivered'
+                WHERE status = 'Delivered' ${dateCondition}
             `;
-            if (dateCondition) {
-                ordersQuery += ` ${dateCondition}`;
-            }
+            
             const [ordersResult] = await pool.query(ordersQuery, dateParams);
             
-            // Total leads (all time - keep as is)
+            // Total leads (all time)
             const [totalLeadsResult] = await pool.query(`
                 SELECT COUNT(DISTINCT id) as total_leads FROM leads
             `);
@@ -156,13 +122,11 @@ class ReportsController {
                     CAST(COALESCE(SUM(oi.total_price), 0) AS DECIMAL(10,2)) as revenue
                 FROM order_items oi
                 INNER JOIN orders o ON oi.order_id = o.id
-                WHERE o.status = 'Delivered'
+                WHERE o.status = 'Delivered' ${dateCondition.replace(/created_at/g, 'o.created_at')}
+                GROUP BY oi.product_name
+                ORDER BY sold DESC
+                LIMIT 5
             `;
-            if (dateCondition) {
-                let orderDateCond = dateCondition.replace(/created_at/g, 'o.created_at');
-                productQuery += ` ${orderDateCond}`;
-            }
-            productQuery += ` GROUP BY oi.product_name ORDER BY sold DESC LIMIT 5`;
             
             const [productData] = await pool.query(productQuery, dateParams);
             
@@ -186,16 +150,12 @@ class ReportsController {
                     ) as conversion,
                     CAST(COALESCE(SUM(o.total_amount), 0) AS DECIMAL(10,2)) as revenue
                 FROM leads l
-                LEFT JOIN orders o ON l.company_name = o.customer_name AND o.status = 'Delivered'
+                LEFT JOIN orders o ON l.company_name = o.customer_name AND o.status = 'Delivered' ${dateCondition.replace(/created_at/g, 'o.created_at')}
                 LEFT JOIN users u ON l.assigned_to = u.id
+                GROUP BY l.assigned_to, u.name
+                ORDER BY revenue DESC
+                LIMIT 10
             `;
-            
-            if (dateCondition) {
-                let orderDateCond = dateCondition.replace(/created_at/g, 'o.created_at');
-                leaderboardQuery += ` ${orderDateCond}`;
-            }
-            
-            leaderboardQuery += ` GROUP BY l.assigned_to, u.name ORDER BY revenue DESC LIMIT 10`;
             
             const [leaderboardData] = await pool.query(leaderboardQuery, dateParams);
             
@@ -206,8 +166,11 @@ class ReportsController {
                 revenue: `₹${((parseFloat(rep.revenue) || 0) / 100000).toFixed(1)}L`
             }));
             
-            // Log the actual revenue being sent
-            console.log(`Sending KPIs - Revenue: ${formattedRevenue}, Leads: ${formattedLeads}, Conv: ${conversionRate.toFixed(1)}%, Avg: ${formattedAvgValue}`);
+            // Log the response for debugging
+            console.log(`Sending response for ${range}:`);
+            console.log(`- Revenue Data: ${revenueData.length} items`);
+            console.log(`- Total Revenue: ${formattedRevenue}`);
+            console.log(`- Total Orders: ${totalOrders}`);
             
             res.status(200).json({
                 success: true,

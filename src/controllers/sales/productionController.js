@@ -3,7 +3,7 @@ const pool = require('../../config/database');
 class ProductionController {
     async getAllJobs(req, res) {
         try {
-            const { status, search, page = 1, limit = 10 } = req.query;
+            const { status, search, page = 1, limit = 10, dateRange, startDate, endDate } = req.query;
             
             let query = `
                 SELECT p.*, o.customer_name, u.name as assigned_to_name
@@ -14,27 +14,81 @@ class ProductionController {
             `;
             const params = [];
             
+            // Status filter
             if (status && status !== 'All') {
                 query += ` AND p.status = ?`;
                 params.push(status);
             }
+            
+            // Search filter
             if (search) {
                 query += ` AND (p.product_name LIKE ? OR p.job_id LIKE ? OR o.customer_name LIKE ?)`;
                 const searchTerm = `%${search}%`;
                 params.push(searchTerm, searchTerm, searchTerm);
             }
             
+            // Date range filters
+            if (dateRange === 'Weekly') {
+                query += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+            } else if (dateRange === 'Monthly') {
+                query += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
+            } else if (dateRange === 'Quarterly') {
+                query += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
+            } else if (dateRange === 'Yearly') {
+                query += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
+            } else if (dateRange === 'Custom' && startDate && endDate) {
+                query += ` AND DATE(p.created_at) BETWEEN ? AND ?`;
+                params.push(startDate, endDate);
+            }
+            
+            // Build count query with same filters
+            let countQuery = `SELECT COUNT(*) as total FROM production_jobs p WHERE 1=1`;
+            const countParams = [];
+            
+            if (status && status !== 'All') {
+                countQuery += ` AND p.status = ?`;
+                countParams.push(status);
+            }
+            if (search) {
+                countQuery += ` AND (p.product_name LIKE ? OR p.job_id LIKE ?)`;
+                const searchTerm = `%${search}%`;
+                countParams.push(searchTerm, searchTerm);
+            }
+            if (dateRange === 'Weekly') {
+                countQuery += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+            } else if (dateRange === 'Monthly') {
+                countQuery += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
+            } else if (dateRange === 'Quarterly') {
+                countQuery += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
+            } else if (dateRange === 'Yearly') {
+                countQuery += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
+            } else if (dateRange === 'Custom' && startDate && endDate) {
+                countQuery += ` AND DATE(p.created_at) BETWEEN ? AND ?`;
+                countParams.push(startDate, endDate);
+            }
+            
+            // Add pagination
+            const parsedPage = parseInt(page) || 1;
+            const parsedLimit = parseInt(limit) || 10;
+            const offset = (parsedPage - 1) * parsedLimit;
+            
             query += ` ORDER BY p.created_at DESC LIMIT ? OFFSET ?`;
-            params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
+            params.push(parsedLimit, offset);
             
+            // Execute queries
             const [jobs] = await pool.query(query, params);
-            
-            const [countResult] = await pool.query('SELECT COUNT(*) as total FROM production_jobs');
+            const [countResult] = await pool.query(countQuery, countParams);
+            const total = countResult[0]?.total || 0;
             
             res.status(200).json({
                 success: true,
                 data: jobs,
-                
+                pagination: {
+                    page: parsedPage,
+                    limit: parsedLimit,
+                    total: total,
+                    pages: Math.ceil(total / parsedLimit)
+                }
             });
         } catch (error) {
             console.error('Error fetching production jobs:', error);
@@ -85,7 +139,7 @@ class ProductionController {
             const { id } = req.params;
             const updates = req.body;
             
-            const allowedFields = ['stage', 'status', 'started_at', 'completed_at', 'assigned_to'];
+            const allowedFields = ['stage', 'status', 'started_at', 'completed_at', 'assigned_to', 'notes'];
             
             const updateFields = [];
             const params = [];
@@ -110,9 +164,20 @@ class ProductionController {
                 params
             );
             
+            // Fetch updated job
+            const [updatedJob] = await pool.query(
+                `SELECT p.*, o.customer_name, u.name as assigned_to_name
+                 FROM production_jobs p
+                 LEFT JOIN orders o ON p.order_id = o.id
+                 LEFT JOIN users u ON p.assigned_to = u.id
+                 WHERE p.id = ?`,
+                [id]
+            );
+            
             res.status(200).json({
                 success: true,
-                message: 'Production job updated successfully'
+                message: 'Production job updated successfully',
+                data: updatedJob[0]
             });
         } catch (error) {
             console.error('Error updating production job:', error);

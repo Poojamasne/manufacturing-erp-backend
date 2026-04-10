@@ -5,6 +5,9 @@ class ProductionController {
         try {
             const { status, search, page = 1, limit = 10, dateRange, startDate, endDate } = req.query;
             
+            console.log('=========================================');
+            console.log('Query params:', { status, search, page, limit, dateRange, startDate, endDate });
+            
             let query = `
                 SELECT p.*, o.customer_name, u.name as assigned_to_name
                 FROM production_jobs p
@@ -27,21 +30,26 @@ class ProductionController {
                 params.push(searchTerm, searchTerm, searchTerm);
             }
             
-            // Date range filters
+            // Date range filters - APPLY TO MAIN QUERY
             if (dateRange === 'Weekly') {
                 query += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+                console.log('Applying Weekly filter');
             } else if (dateRange === 'Monthly') {
                 query += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
+                console.log('Applying Monthly filter');
             } else if (dateRange === 'Quarterly') {
                 query += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
+                console.log('Applying Quarterly filter');
             } else if (dateRange === 'Yearly') {
                 query += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
+                console.log('Applying Yearly filter');
             } else if (dateRange === 'Custom' && startDate && endDate) {
                 query += ` AND DATE(p.created_at) BETWEEN ? AND ?`;
                 params.push(startDate, endDate);
+                console.log('Applying Custom filter:', startDate, endDate);
             }
             
-            // Build count query with same filters
+            // Build count query with SAME filters
             let countQuery = `SELECT COUNT(*) as total FROM production_jobs p WHERE 1=1`;
             const countParams = [];
             
@@ -54,6 +62,7 @@ class ProductionController {
                 const searchTerm = `%${search}%`;
                 countParams.push(searchTerm, searchTerm);
             }
+            // CRITICAL FIX: Add date filters to COUNT query
             if (dateRange === 'Weekly') {
                 countQuery += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
             } else if (dateRange === 'Monthly') {
@@ -75,10 +84,15 @@ class ProductionController {
             query += ` ORDER BY p.created_at DESC LIMIT ? OFFSET ?`;
             params.push(parsedLimit, offset);
             
+            console.log('Main Query:', query);
+            console.log('Count Query:', countQuery);
+            
             // Execute queries
             const [jobs] = await pool.query(query, params);
             const [countResult] = await pool.query(countQuery, countParams);
             const total = countResult[0]?.total || 0;
+            
+            console.log(`Found ${jobs.length} jobs, Total: ${total}`);
             
             res.status(200).json({
                 success: true,
@@ -103,6 +117,8 @@ class ProductionController {
     async getJobById(req, res) {
         try {
             const { id } = req.params;
+            
+            console.log('Fetching job ID:', id);
             
             const [jobs] = await pool.query(
                 `SELECT p.*, o.customer_name, u.name as assigned_to_name
@@ -139,15 +155,22 @@ class ProductionController {
             const { id } = req.params;
             const updates = req.body;
             
+            console.log('=========================================');
+            console.log('UPDATE PRODUCTION JOB');
+            console.log('Job ID:', id);
+            console.log('Update Data:', JSON.stringify(updates, null, 2));
+            console.log('=========================================');
+            
             const allowedFields = ['stage', 'status', 'started_at', 'completed_at', 'assigned_to', 'notes'];
             
             const updateFields = [];
             const params = [];
             
             for (const field of allowedFields) {
-                if (updates[field] !== undefined) {
+                if (updates[field] !== undefined && updates[field] !== null && updates[field] !== '') {
                     updateFields.push(`${field} = ?`);
                     params.push(updates[field]);
+                    console.log(`Updating ${field} = ${updates[field]}`);
                 }
             }
             
@@ -159,10 +182,13 @@ class ProductionController {
             }
             
             params.push(id);
-            await pool.query(
-                `UPDATE production_jobs SET ${updateFields.join(', ')}, updated_at = NOW() WHERE id = ?`,
-                params
-            );
+            
+            const updateQuery = `UPDATE production_jobs SET ${updateFields.join(', ')}, updated_at = NOW() WHERE id = ?`;
+            console.log('Update Query:', updateQuery);
+            console.log('Params:', params);
+            
+            const [result] = await pool.query(updateQuery, params);
+            console.log('Update result:', result);
             
             // Fetch updated job
             const [updatedJob] = await pool.query(
@@ -174,10 +200,12 @@ class ProductionController {
                 [id]
             );
             
+            console.log('Updated job data:', updatedJob[0]);
+            
             res.status(200).json({
                 success: true,
                 message: 'Production job updated successfully',
-                data: updatedJob[0]
+                data: updatedJob[0] || null
             });
         } catch (error) {
             console.error('Error updating production job:', error);
@@ -192,6 +220,9 @@ class ProductionController {
     async deleteJob(req, res) {
         try {
             const { id } = req.params;
+            
+            console.log('Deleting job ID:', id);
+            
             await pool.query('DELETE FROM production_jobs WHERE id = ?', [id]);
             
             res.status(200).json({

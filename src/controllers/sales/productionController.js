@@ -3,10 +3,9 @@ const pool = require('../../config/database');
 class ProductionController {
     async getAllJobs(req, res) {
         try {
-            const { status, search, page = 1, limit = 10, dateRange, startDate, endDate } = req.query;
+            const { status, stage, search, page = 1, limit = 10, dateRange, startDate, endDate } = req.query;
             
-            console.log('=========================================');
-            console.log('Query params:', { status, search, page, limit, dateRange, startDate, endDate });
+            console.log('Query params:', { status, stage, search, page, limit, dateRange, startDate, endDate });
             
             let query = `
                 SELECT p.*, o.customer_name, u.name as assigned_to_name
@@ -21,6 +20,14 @@ class ProductionController {
             if (status && status !== 'All') {
                 query += ` AND p.status = ?`;
                 params.push(status);
+                console.log('Applying status filter:', status);
+            }
+            
+            // Stage filter - ADDED
+            if (stage && stage !== 'All') {
+                query += ` AND p.stage = ?`;
+                params.push(stage);
+                console.log('Applying stage filter:', stage);
             }
             
             // Search filter
@@ -28,6 +35,7 @@ class ProductionController {
                 query += ` AND (p.product_name LIKE ? OR p.job_id LIKE ? OR o.customer_name LIKE ?)`;
                 const searchTerm = `%${search}%`;
                 params.push(searchTerm, searchTerm, searchTerm);
+                console.log('Applying search filter:', search);
             }
             
             // Date range filters - APPLY TO MAIN QUERY
@@ -57,11 +65,19 @@ class ProductionController {
                 countQuery += ` AND p.status = ?`;
                 countParams.push(status);
             }
+            
+            // Stage filter for count query - ADDED
+            if (stage && stage !== 'All') {
+                countQuery += ` AND p.stage = ?`;
+                countParams.push(stage);
+            }
+            
             if (search) {
                 countQuery += ` AND (p.product_name LIKE ? OR p.job_id LIKE ?)`;
                 const searchTerm = `%${search}%`;
                 countParams.push(searchTerm, searchTerm);
             }
+            
             // CRITICAL FIX: Add date filters to COUNT query
             if (dateRange === 'Weekly') {
                 countQuery += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
@@ -86,6 +102,7 @@ class ProductionController {
             
             console.log('Main Query:', query);
             console.log('Count Query:', countQuery);
+            console.log('Params:', params);
             
             // Execute queries
             const [jobs] = await pool.query(query, params);

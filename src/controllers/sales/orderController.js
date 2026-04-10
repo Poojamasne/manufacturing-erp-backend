@@ -112,50 +112,109 @@ class OrderController {
 
   async getAllOrders(req, res) {
     try {
-      const { status, search, page = 1, limit = 10 } = req.query;
+        const { status, search, page = 1, limit = 10, dateRange, startDate, endDate } = req.query;
 
-      let query = `
-                SELECT o.*, u.name as sales_rep_name,
-                       (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count
-                FROM orders o
-                LEFT JOIN users u ON o.sales_rep_id = u.id
-                WHERE 1=1
-            `;
-      const params = [];
+        let query = `
+            SELECT o.*, u.name as sales_rep_name,
+                   (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as item_count
+            FROM orders o
+            LEFT JOIN users u ON o.sales_rep_id = u.id
+            WHERE 1=1
+        `;
+        const params = [];
 
-      if (status && status !== "All") {
-        query += ` AND o.status = ?`;
-        params.push(status);
-      }
-      if (search) {
-        query += ` AND (o.customer_name LIKE ? OR o.order_id LIKE ?)`;
-        const searchTerm = `%${search}%`;
-        params.push(searchTerm, searchTerm);
-      }
-
-      query += ` ORDER BY o.created_at DESC LIMIT ? OFFSET ?`;
-      params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
-
-      const [orders] = await pool.query(query, params);
-
-      const [countResult] = await pool.query(
-        "SELECT COUNT(*) as total FROM orders",
-      );
-
-      res.status(200).json({
-        success: true,
-        data: orders,
+        // Status filter
+        if (status && status !== "All") {
+            query += ` AND o.status = ?`;
+            params.push(status);
+        }
         
-      });
+        // Search filter
+        if (search) {
+            query += ` AND (o.customer_name LIKE ? OR o.order_id LIKE ?)`;
+            const searchTerm = `%${search}%`;
+            params.push(searchTerm, searchTerm);
+        }
+        
+        // Date range filters
+        if (dateRange === 'Weekly') {
+            query += ` AND o.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+        } else if (dateRange === 'Monthly') {
+            query += ` AND o.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
+        } else if (dateRange === 'Quarterly') {
+            query += ` AND o.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
+        } else if (dateRange === 'Yearly') {
+            query += ` AND o.created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
+        } else if (dateRange === 'Custom' && startDate && endDate) {
+            query += ` AND DATE(o.created_at) BETWEEN ? AND ?`;
+            params.push(startDate, endDate);
+        }
+
+        // Clone params for count query (before adding pagination)
+        const countParams = [...params];
+        
+        // Add pagination
+        const parsedPage = parseInt(page) || 1;
+        const parsedLimit = parseInt(limit) || 10;
+        const offset = (parsedPage - 1) * parsedLimit;
+        
+        query += ` ORDER BY o.created_at DESC LIMIT ? OFFSET ?`;
+        params.push(parsedLimit, offset);
+
+        const [orders] = await pool.query(query, params);
+
+        // Get total count for pagination
+        let countQuery = `
+            SELECT COUNT(*) as total 
+            FROM orders o
+            WHERE 1=1
+        `;
+        
+        // Add same filters to count query
+        let countQueryParams = [];
+        if (status && status !== "All") {
+            countQuery += ` AND o.status = ?`;
+            countQueryParams.push(status);
+        }
+        if (search) {
+            countQuery += ` AND (o.customer_name LIKE ? OR o.order_id LIKE ?)`;
+            const searchTerm = `%${search}%`;
+            countQueryParams.push(searchTerm, searchTerm);
+        }
+        if (dateRange === 'Weekly') {
+            countQuery += ` AND o.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
+        } else if (dateRange === 'Monthly') {
+            countQuery += ` AND o.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
+        } else if (dateRange === 'Quarterly') {
+            countQuery += ` AND o.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
+        } else if (dateRange === 'Yearly') {
+            countQuery += ` AND o.created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
+        } else if (dateRange === 'Custom' && startDate && endDate) {
+            countQuery += ` AND DATE(o.created_at) BETWEEN ? AND ?`;
+            countQueryParams.push(startDate, endDate);
+        }
+        
+        const [countResult] = await pool.query(countQuery, countQueryParams);
+
+        res.status(200).json({
+            success: true,
+            data: orders,
+            pagination: {
+                page: parsedPage,
+                limit: parsedLimit,
+                total: countResult[0]?.total || 0,
+                pages: Math.ceil((countResult[0]?.total || 0) / parsedLimit)
+            }
+        });
     } catch (error) {
-      console.error("Error fetching orders:", error);
-      res.status(500).json({
-        success: false,
-        message: "Error fetching orders",
-        error: error.message,
-      });
+        console.error("Error fetching orders:", error);
+        res.status(500).json({
+            success: false,
+            message: "Error fetching orders",
+            error: error.message,
+        });
     }
-  }
+}
 
   async getOrderById(req, res) {
     try {

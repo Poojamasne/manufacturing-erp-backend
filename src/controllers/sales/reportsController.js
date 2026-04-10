@@ -307,4 +307,5 @@ class ReportsController {
     }
 }
 
+
 module.exports = new ReportsController();

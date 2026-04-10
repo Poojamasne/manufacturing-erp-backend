@@ -27,7 +27,8 @@ const corsOptions = {
         'http://localhost:3000',
         'http://localhost:5173',
         'https://manufacturing-erp-zonixtec.vercel.app',
-        'https://your-frontend-domain.vercel.app'
+        'https://your-frontend-domain.vercel.app',
+        'https://manufacturing-erp-frontend-eta.vercel.app' 
     ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],

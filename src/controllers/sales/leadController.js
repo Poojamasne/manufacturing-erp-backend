@@ -191,7 +191,7 @@ class LeadController {
 
   async getAllLeads(req, res) {
     try {
-      const { status, priority, search, page = 1, limit = 10 } = req.query;
+      const { status, priority, search, page = 1, limit = 100 } = req.query;
 
       let query = `
             SELECT l.*, u.name as assigned_to_name

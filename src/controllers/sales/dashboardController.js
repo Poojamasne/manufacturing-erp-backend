@@ -4,14 +4,16 @@ const pool = require('../../config/database');
 function getDateRange(filter, customStartDate = null, customEndDate = null) {
     const now = new Date();
     let startDate = null;
-    let endDate = new Date();
+    let endDate = null;
     
     switch(filter) {
         case 'Weekly':
-            // Get start of current week (Sunday)
-            startDate = new Date(now);
-            startDate.setDate(now.getDate() - now.getDay());
-            startDate.setHours(0, 0, 0, 0);
+            // Get start of current week (Monday)
+            const monday = new Date(now);
+            monday.setDate(now.getDate() - now.getDay() + (now.getDay() === 0 ? -6 : 1));
+            monday.setHours(0, 0, 0, 0);
+            startDate = monday;
+            endDate = new Date(now);
             endDate.setHours(23, 59, 59, 999);
             break;
             
@@ -19,6 +21,7 @@ function getDateRange(filter, customStartDate = null, customEndDate = null) {
             // Get start of current month
             startDate = new Date(now.getFullYear(), now.getMonth(), 1);
             startDate.setHours(0, 0, 0, 0);
+            endDate = new Date(now);
             endDate.setHours(23, 59, 59, 999);
             break;
             
@@ -27,6 +30,7 @@ function getDateRange(filter, customStartDate = null, customEndDate = null) {
             const quarter = Math.floor(now.getMonth() / 3);
             startDate = new Date(now.getFullYear(), quarter * 3, 1);
             startDate.setHours(0, 0, 0, 0);
+            endDate = new Date(now);
             endDate.setHours(23, 59, 59, 999);
             break;
             
@@ -34,6 +38,7 @@ function getDateRange(filter, customStartDate = null, customEndDate = null) {
             // Get start of current year
             startDate = new Date(now.getFullYear(), 0, 1);
             startDate.setHours(0, 0, 0, 0);
+            endDate = new Date(now);
             endDate.setHours(23, 59, 59, 999);
             break;
             
@@ -43,11 +48,11 @@ function getDateRange(filter, customStartDate = null, customEndDate = null) {
                 startDate.setHours(0, 0, 0, 0);
                 endDate = new Date(customEndDate);
                 endDate.setHours(23, 59, 59, 999);
-                return { startDate, endDate };
             }
-            return { startDate: null, endDate: null };
+            break;
             
         default:
+            // No filter - return null for both (get all data)
             return { startDate: null, endDate: null };
     }
     
@@ -60,21 +65,26 @@ class DashboardController {
             // Get filter parameters from query string
             const { filter, startDate: customStart, endDate: customEnd } = req.query;
             
-            // Default to Weekly if no filter provided
-            const activeFilter = filter || 'Weekly';
+            // Default to null (no filter) if no filter provided
+            const activeFilter = filter || null;
             
             // Get date range using the helper function
             const { startDate, endDate } = getDateRange(activeFilter, customStart, customEnd);
             
+            console.log('Filter:', activeFilter);
+            console.log('Date range:', startDate, 'to', endDate);
+            
             // Prepare query parameters for date filtering
             let queryParams = [];
             let dateCondition = '';
-            let dateConditionForCount = '';
             
             if (startDate && endDate) {
+                // Convert dates to MySQL datetime format
+                const startDateStr = startDate.toISOString().slice(0, 19).replace('T', ' ');
+                const endDateStr = endDate.toISOString().slice(0, 19).replace('T', ' ');
                 dateCondition = 'WHERE created_at BETWEEN ? AND ?';
-                dateConditionForCount = `WHERE created_at BETWEEN '${startDate.toISOString().slice(0, 19).replace('T', ' ')}' AND '${endDate.toISOString().slice(0, 19).replace('T', ' ')}'`;
-                queryParams = [startDate, endDate];
+                queryParams = [startDateStr, endDateStr];
+                console.log('Date condition with:', startDateStr, endDateStr);
             }
             
             // 1. Get dashboard statistics from leads table with date filter
@@ -91,7 +101,11 @@ class DashboardController {
                 ${dateCondition}
             `;
             
+            console.log('Lead Stats Query:', leadStatsQuery);
+            console.log('Query Params:', queryParams);
+            
             const [leadStats] = await pool.query(leadStatsQuery, queryParams);
+            console.log('Lead Stats Result:', leadStats);
             
             // 2. Get total revenue from lead_products (for won leads) with date filter
             let revenueQuery = `
@@ -101,13 +115,17 @@ class DashboardController {
                 WHERE l.status IN ('Won', 'Converted')
             `;
             
-            let revenueParams = [];
+            let revenueResult;
             if (startDate && endDate) {
+                const startDateStr = startDate.toISOString().slice(0, 19).replace('T', ' ');
+                const endDateStr = endDate.toISOString().slice(0, 19).replace('T', ' ');
                 revenueQuery += ' AND l.created_at BETWEEN ? AND ?';
-                revenueParams = [startDate, endDate];
+                const [revenueData] = await pool.query(revenueQuery, [startDateStr, endDateStr]);
+                revenueResult = revenueData;
+            } else {
+                const [revenueData] = await pool.query(revenueQuery);
+                revenueResult = revenueData;
             }
-            
-            const [revenueData] = await pool.query(revenueQuery, revenueParams);
             
             // 3. Get total revenue from opportunities that are Won with date filter
             let oppRevenueQuery = `
@@ -116,17 +134,21 @@ class DashboardController {
                 WHERE status = 'Won'
             `;
             
-            let oppRevenueParams = [];
+            let oppRevenueResult;
             if (startDate && endDate) {
+                const startDateStr = startDate.toISOString().slice(0, 19).replace('T', ' ');
+                const endDateStr = endDate.toISOString().slice(0, 19).replace('T', ' ');
                 oppRevenueQuery += ' AND created_at BETWEEN ? AND ?';
-                oppRevenueParams = [startDate, endDate];
+                const [oppRevenueData] = await pool.query(oppRevenueQuery, [startDateStr, endDateStr]);
+                oppRevenueResult = oppRevenueData;
+            } else {
+                const [oppRevenueData] = await pool.query(oppRevenueQuery);
+                oppRevenueResult = oppRevenueData;
             }
             
-            const [oppRevenueData] = await pool.query(oppRevenueQuery, oppRevenueParams);
-            
             // Combine revenue from both sources
-            const totalRevenue = parseFloat(revenueData[0]?.total_revenue || 0) + 
-                               parseFloat(oppRevenueData[0]?.total_revenue || 0);
+            const totalRevenue = parseFloat(revenueResult[0]?.total_revenue || 0) + 
+                               parseFloat(oppRevenueResult[0]?.total_revenue || 0);
             
             // 4. Recent leads (last 5) with date filter
             let recentLeadsQuery = `
@@ -148,92 +170,122 @@ class DashboardController {
             const [recentLeads] = await pool.query(recentLeadsQuery, queryParams);
             
             // 5. Pipeline stages (lead status distribution) with date filter
-            let pipelineQuery;
-            let pipelineResult;
-            
+            let pipelineResult = [];
             if (startDate && endDate) {
+                const startDateStr = startDate.toISOString().slice(0, 19).replace('T', ' ');
+                const endDateStr = endDate.toISOString().slice(0, 19).replace('T', ' ');
+                
                 // Get total count for percentage calculation
-                const [totalCountResult] = await pool.query(`SELECT COUNT(*) as total FROM leads ${dateCondition}`, queryParams);
+                const [totalCountResult] = await pool.query(`SELECT COUNT(*) as total FROM leads WHERE created_at BETWEEN ? AND ?`, [startDateStr, endDateStr]);
                 const totalCount = totalCountResult[0].total;
                 
-                pipelineQuery = `
-                    SELECT 
-                        status as stage, 
-                        COUNT(*) as count,
-                        ROUND((COUNT(*) / ?) * 100, 2) as percentage
-                    FROM leads
-                    ${dateCondition}
-                    GROUP BY status
-                    ORDER BY count DESC
-                `;
-                [pipelineResult] = await pool.query(pipelineQuery, [...queryParams, totalCount]);
+                if (totalCount > 0) {
+                    const pipelineQuery = `
+                        SELECT 
+                            status as stage, 
+                            COUNT(*) as count,
+                            ROUND((COUNT(*) / ?) * 100, 2) as percentage
+                        FROM leads
+                        WHERE created_at BETWEEN ? AND ?
+                        GROUP BY status
+                        ORDER BY count DESC
+                    `;
+                    [pipelineResult] = await pool.query(pipelineQuery, [totalCount, startDateStr, endDateStr]);
+                }
             } else {
-                pipelineQuery = `
-                    SELECT 
-                        status as stage, 
-                        COUNT(*) as count,
-                        ROUND((COUNT(*) / (SELECT COUNT(*) FROM leads)) * 100, 2) as percentage
-                    FROM leads
-                    GROUP BY status
-                    ORDER BY count DESC
-                `;
-                [pipelineResult] = await pool.query(pipelineQuery);
+                const [totalCountResult] = await pool.query(`SELECT COUNT(*) as total FROM leads`);
+                const totalCount = totalCountResult[0].total;
+                
+                if (totalCount > 0) {
+                    const pipelineQuery = `
+                        SELECT 
+                            status as stage, 
+                            COUNT(*) as count,
+                            ROUND((COUNT(*) / ?) * 100, 2) as percentage
+                        FROM leads
+                        GROUP BY status
+                        ORDER BY count DESC
+                    `;
+                    [pipelineResult] = await pool.query(pipelineQuery, [totalCount]);
+                }
             }
             
             // 6. Sales by product category (from lead_products) with date filter
-            let salesByCategoryQuery = `
-                SELECT 
-                    lp.product_name as category,
-                    COUNT(DISTINCT lp.lead_id) as total_orders,
-                    SUM(lp.quantity) as units_sold,
-                    SUM(lp.total_price) as revenue
-                FROM lead_products lp
-                INNER JOIN leads l ON lp.lead_id = l.id
-            `;
-            
             let salesByCategoryResult = [];
             if (startDate && endDate) {
-                salesByCategoryQuery += ' WHERE l.created_at BETWEEN ? AND ?';
-                salesByCategoryQuery += ' GROUP BY lp.product_name ORDER BY revenue DESC LIMIT 5';
-                const [salesByCategory] = await pool.query(salesByCategoryQuery, revenueParams);
+                const startDateStr = startDate.toISOString().slice(0, 19).replace('T', ' ');
+                const endDateStr = endDate.toISOString().slice(0, 19).replace('T', ' ');
+                
+                const salesByCategoryQuery = `
+                    SELECT 
+                        lp.product_name as category,
+                        COUNT(DISTINCT lp.lead_id) as total_orders,
+                        SUM(lp.quantity) as units_sold,
+                        SUM(lp.total_price) as revenue
+                    FROM lead_products lp
+                    INNER JOIN leads l ON lp.lead_id = l.id
+                    WHERE l.created_at BETWEEN ? AND ?
+                    GROUP BY lp.product_name
+                    ORDER BY revenue DESC
+                    LIMIT 5
+                `;
+                const [salesByCategory] = await pool.query(salesByCategoryQuery, [startDateStr, endDateStr]);
                 salesByCategoryResult = salesByCategory;
             } else {
-                salesByCategoryQuery += ' GROUP BY lp.product_name ORDER BY revenue DESC LIMIT 5';
+                const salesByCategoryQuery = `
+                    SELECT 
+                        product_name as category,
+                        COUNT(DISTINCT lead_id) as total_orders,
+                        SUM(quantity) as units_sold,
+                        SUM(total_price) as revenue
+                    FROM lead_products
+                    GROUP BY product_name
+                    ORDER BY revenue DESC
+                    LIMIT 5
+                `;
                 const [salesByCategory] = await pool.query(salesByCategoryQuery);
                 salesByCategoryResult = salesByCategory;
             }
             
             // 7. Opportunity pipeline stages with date filter
-            let oppPipelineQuery;
-            let oppPipelineResult;
-            
+            let oppPipelineResult = [];
             if (startDate && endDate) {
+                const startDateStr = startDate.toISOString().slice(0, 19).replace('T', ' ');
+                const endDateStr = endDate.toISOString().slice(0, 19).replace('T', ' ');
+                
                 // Get total count for percentage calculation
-                const [totalOppCountResult] = await pool.query(`SELECT COUNT(*) as total FROM opportunities ${dateCondition}`, queryParams);
+                const [totalOppCountResult] = await pool.query(`SELECT COUNT(*) as total FROM opportunities WHERE created_at BETWEEN ? AND ?`, [startDateStr, endDateStr]);
                 const totalOppCount = totalOppCountResult[0].total;
                 
-                oppPipelineQuery = `
-                    SELECT 
-                        stage,
-                        COUNT(*) as count,
-                        ROUND((COUNT(*) / ?) * 100, 2) as percentage
-                    FROM opportunities
-                    ${dateCondition}
-                    GROUP BY stage
-                    ORDER BY count DESC
-                `;
-                [oppPipelineResult] = await pool.query(oppPipelineQuery, [...queryParams, totalOppCount]);
+                if (totalOppCount > 0) {
+                    const oppPipelineQuery = `
+                        SELECT 
+                            stage,
+                            COUNT(*) as count,
+                            ROUND((COUNT(*) / ?) * 100, 2) as percentage
+                        FROM opportunities
+                        WHERE created_at BETWEEN ? AND ?
+                        GROUP BY stage
+                        ORDER BY count DESC
+                    `;
+                    [oppPipelineResult] = await pool.query(oppPipelineQuery, [totalOppCount, startDateStr, endDateStr]);
+                }
             } else {
-                oppPipelineQuery = `
-                    SELECT 
-                        stage,
-                        COUNT(*) as count,
-                        ROUND((COUNT(*) / (SELECT COUNT(*) FROM opportunities)) * 100, 2) as percentage
-                    FROM opportunities
-                    GROUP BY stage
-                    ORDER BY count DESC
-                `;
-                [oppPipelineResult] = await pool.query(oppPipelineQuery);
+                const [totalOppCountResult] = await pool.query(`SELECT COUNT(*) as total FROM opportunities`);
+                const totalOppCount = totalOppCountResult[0].total;
+                
+                if (totalOppCount > 0) {
+                    const oppPipelineQuery = `
+                        SELECT 
+                            stage,
+                            COUNT(*) as count,
+                            ROUND((COUNT(*) / ?) * 100, 2) as percentage
+                        FROM opportunities
+                        GROUP BY stage
+                        ORDER BY count DESC
+                    `;
+                    [oppPipelineResult] = await pool.query(oppPipelineQuery, [totalOppCount]);
+                }
             }
             
             // Send success response

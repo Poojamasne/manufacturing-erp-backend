@@ -69,9 +69,11 @@ class DashboardController {
             // Prepare query parameters for date filtering
             let queryParams = [];
             let dateCondition = '';
+            let dateConditionForCount = '';
             
             if (startDate && endDate) {
                 dateCondition = 'WHERE created_at BETWEEN ? AND ?';
+                dateConditionForCount = `WHERE created_at BETWEEN '${startDate.toISOString().slice(0, 19).replace('T', ' ')}' AND '${endDate.toISOString().slice(0, 19).replace('T', ' ')}'`;
                 queryParams = [startDate, endDate];
             }
             
@@ -146,22 +148,37 @@ class DashboardController {
             const [recentLeads] = await pool.query(recentLeadsQuery, queryParams);
             
             // 5. Pipeline stages (lead status distribution) with date filter
-            let pipelineQuery = `
-                SELECT 
-                    status as stage, 
-                    COUNT(*) as count,
-                    CASE 
-                        WHEN (SELECT COUNT(*) FROM leads ${dateCondition}) > 0
-                        THEN ROUND((COUNT(*) / (SELECT COUNT(*) FROM leads ${dateCondition})) * 100, 2)
-                        ELSE 0
-                    END as percentage
-                FROM leads
-                ${dateCondition}
-                GROUP BY status
-                ORDER BY count DESC
-            `;
+            let pipelineQuery;
+            let pipelineResult;
             
-            const [pipeline] = await pool.query(pipelineQuery, queryParams);
+            if (startDate && endDate) {
+                // Get total count for percentage calculation
+                const [totalCountResult] = await pool.query(`SELECT COUNT(*) as total FROM leads ${dateCondition}`, queryParams);
+                const totalCount = totalCountResult[0].total;
+                
+                pipelineQuery = `
+                    SELECT 
+                        status as stage, 
+                        COUNT(*) as count,
+                        ROUND((COUNT(*) / ?) * 100, 2) as percentage
+                    FROM leads
+                    ${dateCondition}
+                    GROUP BY status
+                    ORDER BY count DESC
+                `;
+                [pipelineResult] = await pool.query(pipelineQuery, [...queryParams, totalCount]);
+            } else {
+                pipelineQuery = `
+                    SELECT 
+                        status as stage, 
+                        COUNT(*) as count,
+                        ROUND((COUNT(*) / (SELECT COUNT(*) FROM leads)) * 100, 2) as percentage
+                    FROM leads
+                    GROUP BY status
+                    ORDER BY count DESC
+                `;
+                [pipelineResult] = await pool.query(pipelineQuery);
+            }
             
             // 6. Sales by product category (from lead_products) with date filter
             let salesByCategoryQuery = `
@@ -187,22 +204,37 @@ class DashboardController {
             }
             
             // 7. Opportunity pipeline stages with date filter
-            let oppPipelineQuery = `
-                SELECT 
-                    stage,
-                    COUNT(*) as count,
-                    CASE 
-                        WHEN (SELECT COUNT(*) FROM opportunities ${dateCondition}) > 0
-                        THEN ROUND((COUNT(*) / (SELECT COUNT(*) FROM opportunities ${dateCondition})) * 100, 2)
-                        ELSE 0
-                    END as percentage
-                FROM opportunities
-                ${dateCondition}
-                GROUP BY stage
-                ORDER BY count DESC
-            `;
+            let oppPipelineQuery;
+            let oppPipelineResult;
             
-            const [oppPipeline] = await pool.query(oppPipelineQuery, queryParams);
+            if (startDate && endDate) {
+                // Get total count for percentage calculation
+                const [totalOppCountResult] = await pool.query(`SELECT COUNT(*) as total FROM opportunities ${dateCondition}`, queryParams);
+                const totalOppCount = totalOppCountResult[0].total;
+                
+                oppPipelineQuery = `
+                    SELECT 
+                        stage,
+                        COUNT(*) as count,
+                        ROUND((COUNT(*) / ?) * 100, 2) as percentage
+                    FROM opportunities
+                    ${dateCondition}
+                    GROUP BY stage
+                    ORDER BY count DESC
+                `;
+                [oppPipelineResult] = await pool.query(oppPipelineQuery, [...queryParams, totalOppCount]);
+            } else {
+                oppPipelineQuery = `
+                    SELECT 
+                        stage,
+                        COUNT(*) as count,
+                        ROUND((COUNT(*) / (SELECT COUNT(*) FROM opportunities)) * 100, 2) as percentage
+                    FROM opportunities
+                    GROUP BY stage
+                    ORDER BY count DESC
+                `;
+                [oppPipelineResult] = await pool.query(oppPipelineQuery);
+            }
             
             // Send success response
             res.status(200).json({
@@ -215,9 +247,9 @@ class DashboardController {
                         winRate: parseFloat(leadStats[0]?.win_rate || 0)
                     },
                     recentLeads: recentLeads || [],
-                    pipeline: pipeline || [],
+                    pipeline: pipelineResult || [],
                     salesByCategory: salesByCategoryResult || [],
-                    opportunityPipeline: oppPipeline || []
+                    opportunityPipeline: oppPipelineResult || []
                 }
             });
             

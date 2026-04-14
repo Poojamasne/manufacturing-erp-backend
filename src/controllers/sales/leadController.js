@@ -2,192 +2,191 @@
 
 class LeadController {
   async createLead(req, res) {
-    try {
-      const {
-        company_name,
-        contact_person,
-        phone,
-        email,
-        address,
-        city,
-        state,
-        gst_number,
-        lead_source,
-        priority,
-        expected_close_date,
-        followup_date,
-        notes,
-        assigned_to,
-        products,
-      } = req.body;
+  try {
+    const {
+      company_name,
+      contact_person,
+      phone,
+      email,
+      address,
+      city,
+      state,
+      gst_number,
+      lead_source,
+      priority,
+      expected_close_date,
+      followup_date,
+      notes,
+      assigned_to,
+      products,
+    } = req.body;
 
-      if (!company_name || !phone) {
-        return res.status(400).json({
-          success: false,
-          message: "Company name and phone are required",
-        });
-      }
-
-      // Generate lead ID
-      const [lastLead] = await pool.query(
-        "SELECT lead_id FROM leads ORDER BY id DESC LIMIT 1",
-      );
-      let leadId = "L001";
-      if (lastLead.length > 0) {
-        const num = parseInt(lastLead[0].lead_id.substring(1)) + 1;
-        leadId = "L" + num.toString().padStart(3, "0");
-      }
-
-      const connection = await pool.getConnection();
-      try {
-        await connection.beginTransaction();
-
-        const [result] = await connection.query(
-          `INSERT INTO leads (lead_id, company_name, contact_person, phone, email, address, 
-                        city, state, gst_number, lead_source, priority, expected_close_date, 
-                        followup_date, notes, assigned_to, created_by, status)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'New')`,
-          [
-            leadId,
-            company_name,
-            contact_person,
-            phone,
-            email,
-            address,
-            city,
-            state,
-            gst_number,
-            lead_source,
-            priority,
-            expected_close_date,
-            followup_date,
-            notes,
-            assigned_to || req.user.id,
-            req.user.id,
-          ],
-        );
-
-        // Insert products if any
-        if (products && products.length > 0) {
-          for (const product of products) {
-            let productId = product.product_id || null;
-            let variantId = product.variant_id || null;
-            let productName = product.product_name;
-            let variantName = product.variant;
-            let unitPrice = product.unit_price;
-            let quantity = product.quantity;
-
-            // If product_id is provided, fetch product details
-            if (productId) {
-              const [existingProduct] = await connection.query(
-                "SELECT name, price FROM products WHERE id = ? AND is_active = 1",
-                [productId],
-              );
-
-              if (existingProduct.length > 0) {
-                productName = existingProduct[0].name;
-                if (!unitPrice || unitPrice === 0) {
-                  unitPrice = existingProduct[0].price;
-                }
-              } else {
-                await connection.rollback();
-                return res.status(400).json({
-                  success: false,
-                  message: `Product with ID ${productId} not found or inactive`,
-                });
-              }
-            }
-
-            // If variant_id is provided, fetch variant details from lead_products
-            if (variantId) {
-              const [existingVariant] = await connection.query(
-                `SELECT variant, unit_price, product_id 
-                             FROM lead_products 
-                             WHERE id = ?`,
-                [variantId],
-              );
-
-              if (existingVariant.length > 0) {
-                variantName = existingVariant[0].variant;
-                if (!unitPrice || unitPrice === 0) {
-                  unitPrice = existingVariant[0].unit_price;
-                }
-                if (!productId) {
-                  productId = existingVariant[0].product_id;
-                }
-              } else {
-                await connection.rollback();
-                return res.status(400).json({
-                  success: false,
-                  message: `Variant with ID ${variantId} not found`,
-                });
-              }
-            }
-
-            // Validate required fields
-            if (!productName) {
-              await connection.rollback();
-              return res.status(400).json({
-                success: false,
-                message: "Product name is required for each product",
-              });
-            }
-
-            if (!quantity || quantity <= 0) {
-              await connection.rollback();
-              return res.status(400).json({
-                success: false,
-                message: "Valid quantity is required for each product",
-              });
-            }
-
-            if (!unitPrice || unitPrice <= 0) {
-              await connection.rollback();
-              return res.status(400).json({
-                success: false,
-                message: "Valid unit price is required for each product",
-              });
-            }
-
-            await connection.query(
-              `INSERT INTO lead_products (lead_id, product_id, product_name, variant, 
-                                            quantity, unit_price, total_price)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-              [
-                result.insertId,
-                productId,
-                productName,
-                variantName || null,
-                quantity,
-                unitPrice,
-                quantity * unitPrice,
-              ],
-            );
-          }
-        }
-
-        await connection.commit();
-
-        res.status(201).json({
-          success: true,
-          message: "Lead created successfully",
-          data: { lead_id: leadId, id: result.insertId },
-        });
-      } catch (error) {
-        await connection.rollback();
-        throw error;
-      } finally {
-        connection.release();
-      }
-    } catch (error) {
-      console.error("Error creating lead:", error);
-      res.status(500).json({
+    if (!company_name || !phone) {
+      return res.status(400).json({
         success: false,
-        message: "Error creating lead",
-        error: error.message,
+        message: "Company name and phone are required",
       });
     }
+
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      // FIRST: Insert the lead WITHOUT lead_id (let auto-increment work)
+      const [result] = await connection.query(
+        `INSERT INTO leads (company_name, contact_person, phone, email, address, 
+                      city, state, gst_number, lead_source, priority, expected_close_date, 
+                      followup_date, notes, assigned_to, created_by, status)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'New')`,
+        [
+          company_name,
+          contact_person,
+          phone,
+          email,
+          address,
+          city,
+          state,
+          gst_number,
+          lead_source,
+          priority,
+          expected_close_date,
+          followup_date,
+          notes,
+          assigned_to || req.user.id,
+          req.user.id,
+        ],
+      );
+
+      // SECOND: Generate lead_id based on the actual AUTO_INCREMENT ID
+      const leadId = `LD-${result.insertId.toString().padStart(3, "0")}`;
+      
+      // THIRD: Update the lead with the generated lead_id
+      await connection.query(
+        "UPDATE leads SET lead_id = ? WHERE id = ?",
+        [leadId, result.insertId]
+      );
+
+      // Insert products if any (rest of your code remains the same)
+      if (products && products.length > 0) {
+        for (const product of products) {
+          let productId = product.product_id || null;
+          let variantId = product.variant_id || null;
+          let productName = product.product_name;
+          let variantName = product.variant;
+          let unitPrice = product.unit_price;
+          let quantity = product.quantity;
+
+          // If product_id is provided, fetch product details
+          if (productId) {
+            const [existingProduct] = await connection.query(
+              "SELECT name, price FROM products WHERE id = ? AND is_active = 1",
+              [productId],
+            );
+
+            if (existingProduct.length > 0) {
+              productName = existingProduct[0].name;
+              if (!unitPrice || unitPrice === 0) {
+                unitPrice = existingProduct[0].price;
+              }
+            } else {
+              await connection.rollback();
+              return res.status(400).json({
+                success: false,
+                message: `Product with ID ${productId} not found or inactive`,
+              });
+            }
+          }
+
+          // If variant_id is provided, fetch variant details from lead_products
+          if (variantId) {
+            const [existingVariant] = await connection.query(
+              `SELECT variant, unit_price, product_id 
+                           FROM lead_products 
+                           WHERE id = ?`,
+              [variantId],
+            );
+
+            if (existingVariant.length > 0) {
+              variantName = existingVariant[0].variant;
+              if (!unitPrice || unitPrice === 0) {
+                unitPrice = existingVariant[0].unit_price;
+              }
+              if (!productId) {
+                productId = existingVariant[0].product_id;
+              }
+            } else {
+              await connection.rollback();
+              return res.status(400).json({
+                success: false,
+                message: `Variant with ID ${variantId} not found`,
+              });
+            }
+          }
+
+          // Validate required fields
+          if (!productName) {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              message: "Product name is required for each product",
+            });
+          }
+
+          if (!quantity || quantity <= 0) {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              message: "Valid quantity is required for each product",
+            });
+          }
+
+          if (!unitPrice || unitPrice <= 0) {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              message: "Valid unit price is required for each product",
+            });
+          }
+
+          await connection.query(
+            `INSERT INTO lead_products (lead_id, product_id, product_name, variant, 
+                                          quantity, unit_price, total_price)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+              result.insertId,
+              productId,
+              productName,
+              variantName || null,
+              quantity,
+              unitPrice,
+              quantity * unitPrice,
+            ],
+          );
+        }
+      }
+
+      await connection.commit();
+
+      res.status(201).json({
+        success: true,
+        message: "Lead created successfully",
+        data: { lead_id: leadId, id: result.insertId },
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    console.error("Error creating lead:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error creating lead",
+      error: error.message,
+    });
   }
+}
 
   async getAllLeads(req, res) {
     try {

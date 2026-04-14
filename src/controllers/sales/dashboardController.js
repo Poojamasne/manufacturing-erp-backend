@@ -88,13 +88,14 @@ class DashboardController {
             }
             
             // 1. Get dashboard statistics from leads table with date filter
+            // CHANGED: Only count 'Won' status, NOT including 'Converted'
             let leadStatsQuery = `
                 SELECT 
                     COUNT(*) as total_leads,
-                    SUM(CASE WHEN status IN ('Won', 'Converted') THEN 1 ELSE 0 END) as deals_won,
+                    SUM(CASE WHEN status = 'Won' THEN 1 ELSE 0 END) as deals_won,
                     CASE 
                         WHEN COUNT(*) > 0 
-                        THEN ROUND((SUM(CASE WHEN status IN ('Won', 'Converted') THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2)
+                        THEN ROUND((SUM(CASE WHEN status = 'Won' THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2)
                         ELSE 0
                     END as win_rate
                 FROM leads
@@ -108,11 +109,12 @@ class DashboardController {
             console.log('Lead Stats Result:', leadStats);
             
             // 2. Get total revenue from lead_products (for won leads) with date filter
+            // CHANGED: Only include leads with status = 'Won' (not 'Converted')
             let revenueQuery = `
                 SELECT COALESCE(SUM(lp.total_price), 0) as total_revenue
                 FROM lead_products lp
                 INNER JOIN leads l ON lp.lead_id = l.id
-                WHERE l.status IN ('Won', 'Converted')
+                WHERE l.status = 'Won'
             `;
             
             let revenueResult;
@@ -128,6 +130,7 @@ class DashboardController {
             }
             
             // 3. Get total revenue from opportunities that are Won with date filter
+            // NO CHANGE - opportunities already using 'Won' status
             let oppRevenueQuery = `
                 SELECT COALESCE(SUM(value), 0) as total_revenue
                 FROM opportunities
@@ -151,6 +154,7 @@ class DashboardController {
                                parseFloat(oppRevenueResult[0]?.total_revenue || 0);
             
             // 4. Recent leads (last 5) with date filter
+            // NO CHANGE - shows all leads regardless of status
             let recentLeadsQuery = `
                 SELECT 
                     id,
@@ -170,6 +174,7 @@ class DashboardController {
             const [recentLeads] = await pool.query(recentLeadsQuery, queryParams);
             
             // 5. Pipeline stages (lead status distribution) with date filter
+            // NO CHANGE - shows all statuses including 'Converted' for transparency
             let pipelineResult = [];
             if (startDate && endDate) {
                 const startDateStr = startDate.toISOString().slice(0, 19).replace('T', ' ');
@@ -211,6 +216,7 @@ class DashboardController {
             }
             
             // 6. Sales by product category (from lead_products) with date filter
+            // CHANGED: Only include leads with status = 'Won' (not 'Converted')
             let salesByCategoryResult = [];
             if (startDate && endDate) {
                 const startDateStr = startDate.toISOString().slice(0, 19).replace('T', ' ');
@@ -224,7 +230,8 @@ class DashboardController {
                         SUM(lp.total_price) as revenue
                     FROM lead_products lp
                     INNER JOIN leads l ON lp.lead_id = l.id
-                    WHERE l.created_at BETWEEN ? AND ?
+                    WHERE l.status = 'Won'
+                    AND l.created_at BETWEEN ? AND ?
                     GROUP BY lp.product_name
                     ORDER BY revenue DESC
                     LIMIT 5
@@ -234,12 +241,14 @@ class DashboardController {
             } else {
                 const salesByCategoryQuery = `
                     SELECT 
-                        product_name as category,
-                        COUNT(DISTINCT lead_id) as total_orders,
-                        SUM(quantity) as units_sold,
-                        SUM(total_price) as revenue
-                    FROM lead_products
-                    GROUP BY product_name
+                        lp.product_name as category,
+                        COUNT(DISTINCT lp.lead_id) as total_orders,
+                        SUM(lp.quantity) as units_sold,
+                        SUM(lp.total_price) as revenue
+                    FROM lead_products lp
+                    INNER JOIN leads l ON lp.lead_id = l.id
+                    WHERE l.status = 'Won'
+                    GROUP BY lp.product_name
                     ORDER BY revenue DESC
                     LIMIT 5
                 `;
@@ -248,6 +257,7 @@ class DashboardController {
             }
             
             // 7. Opportunity pipeline stages with date filter
+            // NO CHANGE
             let oppPipelineResult = [];
             if (startDate && endDate) {
                 const startDateStr = startDate.toISOString().slice(0, 19).replace('T', ' ');

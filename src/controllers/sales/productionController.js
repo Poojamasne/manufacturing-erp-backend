@@ -1,4 +1,5 @@
 const pool = require('../../config/database');
+const ProductionModel = require('../../models/sales/productionModel');
 
 class ProductionController {
     async getAllJobs(req, res) {
@@ -7,107 +8,15 @@ class ProductionController {
             
             console.log('Query params:', { status, stage, search, page, limit, dateRange, startDate, endDate });
             
-            let query = `
-                SELECT p.*, o.customer_name, u.name as assigned_to_name
-                FROM production_jobs p
-                LEFT JOIN orders o ON p.order_id = o.id
-                LEFT JOIN users u ON p.assigned_to = u.id
-                WHERE 1=1
-            `;
-            const params = [];
+            const productionModel = new ProductionModel();
             
-            // Status filter
-            if (status && status !== 'All') {
-                query += ` AND p.status = ?`;
-                params.push(status);
-                console.log('Applying status filter:', status);
-            }
+            const { jobs, parsedPage, parsedLimit } = await productionModel.getAllJobs(
+                status, stage, search, page, limit, dateRange, startDate, endDate
+            );
             
-            // Stage filter - ADDED
-            if (stage && stage !== 'All') {
-                query += ` AND p.stage = ?`;
-                params.push(stage);
-                console.log('Applying stage filter:', stage);
-            }
-            
-            // Search filter
-            if (search) {
-                query += ` AND (p.product_name LIKE ? OR p.job_id LIKE ? OR o.customer_name LIKE ?)`;
-                const searchTerm = `%${search}%`;
-                params.push(searchTerm, searchTerm, searchTerm);
-                console.log('Applying search filter:', search);
-            }
-            
-            // Date range filters - APPLY TO MAIN QUERY
-            if (dateRange === 'Weekly') {
-                query += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
-                console.log('Applying Weekly filter');
-            } else if (dateRange === 'Monthly') {
-                query += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
-                console.log('Applying Monthly filter');
-            } else if (dateRange === 'Quarterly') {
-                query += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
-                console.log('Applying Quarterly filter');
-            } else if (dateRange === 'Yearly') {
-                query += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
-                console.log('Applying Yearly filter');
-            } else if (dateRange === 'Custom' && startDate && endDate) {
-                query += ` AND DATE(p.created_at) BETWEEN ? AND ?`;
-                params.push(startDate, endDate);
-                console.log('Applying Custom filter:', startDate, endDate);
-            }
-            
-            // Build count query with SAME filters
-            let countQuery = `SELECT COUNT(*) as total FROM production_jobs p WHERE 1=1`;
-            const countParams = [];
-            
-            if (status && status !== 'All') {
-                countQuery += ` AND p.status = ?`;
-                countParams.push(status);
-            }
-            
-            // Stage filter for count query - ADDED
-            if (stage && stage !== 'All') {
-                countQuery += ` AND p.stage = ?`;
-                countParams.push(stage);
-            }
-            
-            if (search) {
-                countQuery += ` AND (p.product_name LIKE ? OR p.job_id LIKE ?)`;
-                const searchTerm = `%${search}%`;
-                countParams.push(searchTerm, searchTerm);
-            }
-            
-            // CRITICAL FIX: Add date filters to COUNT query
-            if (dateRange === 'Weekly') {
-                countQuery += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`;
-            } else if (dateRange === 'Monthly') {
-                countQuery += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`;
-            } else if (dateRange === 'Quarterly') {
-                countQuery += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)`;
-            } else if (dateRange === 'Yearly') {
-                countQuery += ` AND p.created_at >= DATE_SUB(NOW(), INTERVAL 365 DAY)`;
-            } else if (dateRange === 'Custom' && startDate && endDate) {
-                countQuery += ` AND DATE(p.created_at) BETWEEN ? AND ?`;
-                countParams.push(startDate, endDate);
-            }
-            
-            // Add pagination
-            const parsedPage = parseInt(page) || 1;
-            const parsedLimit = parseInt(limit) || 10;
-            const offset = (parsedPage - 1) * parsedLimit;
-            
-            query += ` ORDER BY p.created_at DESC LIMIT ? OFFSET ?`;
-            params.push(parsedLimit, offset);
-            
-            console.log('Main Query:', query);
-            console.log('Count Query:', countQuery);
-            console.log('Params:', params);
-            
-            // Execute queries
-            const [jobs] = await pool.query(query, params);
-            const [countResult] = await pool.query(countQuery, countParams);
-            const total = countResult[0]?.total || 0;
+            const total = await productionModel.getJobsCount(
+                status, stage, search, dateRange, startDate, endDate
+            );
             
             console.log(`Found ${jobs.length} jobs, Total: ${total}`);
             
@@ -137,16 +46,10 @@ class ProductionController {
             
             console.log('Fetching job ID:', id);
             
-            const [jobs] = await pool.query(
-                `SELECT p.*, o.customer_name, u.name as assigned_to_name
-                 FROM production_jobs p
-                 LEFT JOIN orders o ON p.order_id = o.id
-                 LEFT JOIN users u ON p.assigned_to = u.id
-                 WHERE p.id = ?`,
-                [id]
-            );
+            const productionModel = new ProductionModel();
+            const job = await productionModel.getJobById(id);
             
-            if (jobs.length === 0) {
+            if (!job) {
                 return res.status(404).json({
                     success: false,
                     message: 'Production job not found'
@@ -155,7 +58,7 @@ class ProductionController {
             
             res.status(200).json({
                 success: true,
-                data: jobs[0]
+                data: job
             });
         } catch (error) {
             console.error('Error fetching production job:', error);
@@ -172,11 +75,9 @@ class ProductionController {
             const { id } = req.params;
             const updates = req.body;
             
-            console.log('=========================================');
             console.log('UPDATE PRODUCTION JOB');
             console.log('Job ID:', id);
             console.log('Update Data:', JSON.stringify(updates, null, 2));
-            console.log('=========================================');
             
             const allowedFields = ['stage', 'status', 'started_at', 'completed_at', 'assigned_to', 'notes'];
             
@@ -198,31 +99,28 @@ class ProductionController {
                 });
             }
             
-            params.push(id);
+            const productionModel = new ProductionModel();
             
-            const updateQuery = `UPDATE production_jobs SET ${updateFields.join(', ')}, updated_at = NOW() WHERE id = ?`;
-            console.log('Update Query:', updateQuery);
-            console.log('Params:', params);
+            // Check if job exists
+            const exists = await productionModel.checkJobExists(id);
+            if (!exists) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Production job not found'
+                });
+            }
             
-            const [result] = await pool.query(updateQuery, params);
+            const result = await productionModel.updateJob(id, updateFields, params);
             console.log('Update result:', result);
             
             // Fetch updated job
-            const [updatedJob] = await pool.query(
-                `SELECT p.*, o.customer_name, u.name as assigned_to_name
-                 FROM production_jobs p
-                 LEFT JOIN orders o ON p.order_id = o.id
-                 LEFT JOIN users u ON p.assigned_to = u.id
-                 WHERE p.id = ?`,
-                [id]
-            );
-            
-            console.log('Updated job data:', updatedJob[0]);
+            const updatedJob = await productionModel.getUpdatedJob(id);
+            console.log('Updated job data:', updatedJob);
             
             res.status(200).json({
                 success: true,
                 message: 'Production job updated successfully',
-                data: updatedJob[0] || null
+                data: updatedJob || null
             });
         } catch (error) {
             console.error('Error updating production job:', error);
@@ -240,7 +138,18 @@ class ProductionController {
             
             console.log('Deleting job ID:', id);
             
-            await pool.query('DELETE FROM production_jobs WHERE id = ?', [id]);
+            const productionModel = new ProductionModel();
+            
+            // Check if job exists
+            const exists = await productionModel.checkJobExists(id);
+            if (!exists) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Production job not found'
+                });
+            }
+            
+            await productionModel.deleteJob(id);
             
             res.status(200).json({
                 success: true,

@@ -1,4 +1,5 @@
 const pool = require('../../config/database');
+const QuotationModel = require('../../models/sales/quotationModel');
 
 class QuotationController {
     async createQuotation(req, res) {
@@ -22,86 +23,44 @@ class QuotationController {
             const subtotal = items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
             const total = subtotal - discount + tax;
             
-            // Generate quote ID
-            const [lastQuote] = await pool.query('SELECT quote_id FROM quotations ORDER BY id DESC LIMIT 1');
-            let quoteId = 'QT-001';
-            if (lastQuote.length > 0) {
-                const num = parseInt(lastQuote[0].quote_id.substring(3)) + 1;
-                quoteId = 'QT-' + num.toString().padStart(3, '0');
-            }
+            const quotationModel = new QuotationModel();
             
-            const connection = await pool.getConnection();
-            try {
-                await connection.beginTransaction();
-                
-                const [result] = await connection.query(
-                    `INSERT INTO quotations (
-                        quote_id, opportunity_id, lead_id, company_name, 
-                        contact_person, email, phone, 
-                        billing_address, shipping_address, gst_number,
-                        quotation_date, valid_until,
-                        payment_terms, delivery_terms, currency,
-                        subtotal, discount, tax, total, 
-                        notes, terms_conditions, created_by
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                    [
-                        quoteId, opportunity_id || null, lead_id || null, company_name,
-                        contact_person || null, email || null, phone || null,
-                        billing_address || null, shipping_address || null, gst_number || null,
-                        quotation_date || null, valid_until || null,
-                        payment_terms || 'Net 30', delivery_terms || 'FOB', currency || 'INR',
-                        subtotal, discount, tax, total,
-                        notes || null, terms_conditions || null, req.user.id
-                    ]
-                );
-                
-                // Insert items
-                for (const item of items) {
-                    await connection.query(
-                        `INSERT INTO quotation_items (
-                            quotation_id, product_name, description, 
-                            quantity, unit_price, discount, tax, total_price
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-                        [
-                            result.insertId, 
-                            item.product_name, 
-                            item.description || null,
-                            item.quantity, 
-                            item.unit_price,
-                            item.discount || 0,
-                            item.tax || 18,
-                            item.quantity * item.unit_price
-                        ]
-                    );
-                }
-                
-                await connection.commit();
-                
-                // Fetch the created quotation with items
-                const [newQuotation] = await connection.query(
-                    `SELECT q.*, u.name as created_by_name
-                     FROM quotations q
-                     LEFT JOIN users u ON q.created_by = u.id
-                     WHERE q.id = ?`,
-                    [result.insertId]
-                );
-                
-                const [newItems] = await connection.query(
-                    'SELECT * FROM quotation_items WHERE quotation_id = ?',
-                    [result.insertId]
-                );
-                
-                res.status(201).json({
-                    success: true,
-                    message: 'Quotation created successfully',
-                    data: { ...newQuotation[0], products: newItems }
-                });
-            } catch (error) {
-                await connection.rollback();
-                throw error;
-            } finally {
-                connection.release();
-            }
+        
+            const quoteId = await quotationModel.generateQuoteId();
+            
+            const result = await quotationModel.createQuotationWithTransaction(
+                {
+                    quoteId,
+                    opportunity_id,
+                    lead_id,
+                    company_name,
+                    contact_person,
+                    email,
+                    phone,
+                    billing_address,
+                    shipping_address,
+                    gst_number,
+                    quotation_date,
+                    valid_until,
+                    payment_terms,
+                    delivery_terms,
+                    currency,
+                    subtotal,
+                    discount,
+                    tax,
+                    total,
+                    notes,
+                    terms_conditions
+                },
+                items,
+                req.user.id
+            );
+            
+            res.status(201).json({
+                success: true,
+                message: 'Quotation created successfully',
+                data: { ...result.quotation, products: result.items }
+            });
         } catch (error) {
             console.error('Error creating quotation:', error);
             res.status(500).json({
@@ -116,57 +75,15 @@ class QuotationController {
         try {
             const { status, search, page = 1, limit = 10 } = req.query;
             
-            let query = `
-                SELECT 
-                    q.*, 
-                    u.name as created_by_name,
-                    COUNT(DISTINCT qi.id) as item_count
-                FROM quotations q
-                LEFT JOIN users u ON q.created_by = u.id
-                LEFT JOIN quotation_items qi ON q.id = qi.quotation_id
-                WHERE 1=1
-            `;
-            const params = [];
+            const quotationModel = new QuotationModel();
             
-            if (status && status !== 'All') {
-                query += ` AND q.status = ?`;
-                params.push(status);
-            }
-            if (search) {
-                query += ` AND (q.company_name LIKE ? OR q.quote_id LIKE ?)`;
-                const searchTerm = `%${search}%`;
-                params.push(searchTerm, searchTerm);
-            }
+            const quotations = await quotationModel.getAllQuotations(status, search, page, limit);
+            const total = await quotationModel.getQuotationsCount(status, search);
             
-            query += ` GROUP BY q.id ORDER BY q.created_at DESC LIMIT ? OFFSET ?`;
-            params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
-            
-            const [quotations] = await pool.query(query, params);
-            
-            // Get total count for pagination
-            let countQuery = 'SELECT COUNT(*) as total FROM quotations WHERE 1=1';
-            const countParams = [];
-            
-            if (status && status !== 'All') {
-                countQuery += ` AND status = ?`;
-                countParams.push(status);
-            }
-            if (search) {
-                countQuery += ` AND (company_name LIKE ? OR quote_id LIKE ?)`;
-                countParams.push(`%${search}%`, `%${search}%`);
-            }
-            
-            const [countResult] = await pool.query(countQuery, countParams);
-            
-            // Fetch items for all quotations (optional - for better performance)
             if (quotations.length > 0) {
                 const quoteIds = quotations.map(q => q.id);
-                const [allItems] = await pool.query(
-                    `SELECT * FROM quotation_items WHERE quotation_id IN (?)`,
-                    [quoteIds]
-                );
+                const allItems = await quotationModel.getItemsByQuoteIds(quoteIds);
                 
-                // Group items by quotation_id
                 const itemsByQuote = {};
                 allItems.forEach(item => {
                     if (!itemsByQuote[item.quotation_id]) {
@@ -175,7 +92,7 @@ class QuotationController {
                     itemsByQuote[item.quotation_id].push(item);
                 });
                 
-                // Attach items to each quotation
+                
                 quotations.forEach(quote => {
                     quote.products = itemsByQuote[quote.id] || [];
                 });
@@ -187,8 +104,8 @@ class QuotationController {
                 pagination: {
                     page: parseInt(page),
                     limit: parseInt(limit),
-                    total: countResult[0].total,
-                    pages: Math.ceil(countResult[0].total / limit)
+                    total: total,
+                    pages: Math.ceil(total / limit)
                 }
             });
         } catch (error) {
@@ -205,32 +122,18 @@ class QuotationController {
         try {
             const { id } = req.params;
             
-            const [quotations] = await pool.query(
-                `SELECT q.*, u.name as created_by_name
-                 FROM quotations q
-                 LEFT JOIN users u ON q.created_by = u.id
-                 WHERE q.id = ?`,
-                [id]
-            );
+            const quotationModel = new QuotationModel();
+            const quotation = await quotationModel.getQuotationById(id);
             
-            if (quotations.length === 0) {
+            if (!quotation) {
                 return res.status(404).json({
                     success: false,
                     message: 'Quotation not found'
                 });
             }
             
-            const [items] = await pool.query(
-                `SELECT 
-                    id, product_name, description, quantity, 
-                    unit_price, discount, tax, total_price
-                 FROM quotation_items 
-                 WHERE quotation_id = ?`,
-                [id]
-            );
+            const items = await quotationModel.getQuotationItems(id);
             
-            // Format dates for frontend
-            const quotation = quotations[0];
             if (quotation.quotation_date) {
                 quotation.quotation_date = quotation.quotation_date.toISOString().split('T')[0];
             }
@@ -285,30 +188,25 @@ class QuotationController {
                 });
             }
             
-            params.push(id);
-            await pool.query(
-                `UPDATE quotations SET ${updateFields.join(', ')}, updated_at = NOW() WHERE id = ?`,
-                params
-            );
+            const quotationModel = new QuotationModel();
             
-            // Fetch updated quotation with items
-            const [updatedQuotation] = await pool.query(
-                `SELECT q.*, u.name as created_by_name
-                 FROM quotations q
-                 LEFT JOIN users u ON q.created_by = u.id
-                 WHERE q.id = ?`,
-                [id]
-            );
+            const exists = await quotationModel.checkQuotationExists(id);
+            if (!exists) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Quotation not found'
+                });
+            }
             
-            const [updatedItems] = await pool.query(
-                'SELECT * FROM quotation_items WHERE quotation_id = ?',
-                [id]
-            );
+            await quotationModel.updateQuotation(id, updateFields, params);
+            
+            const updatedQuotation = await quotationModel.getUpdatedQuotation(id);
+            const updatedItems = await quotationModel.getQuotationItems(id);
             
             res.status(200).json({
                 success: true,
                 message: 'Quotation updated successfully',
-                data: { ...updatedQuotation[0], products: updatedItems }
+                data: { ...updatedQuotation, products: updatedItems }
             });
         } catch (error) {
             console.error('Error updating quotation:', error);
@@ -324,37 +222,22 @@ class QuotationController {
         try {
             const { id } = req.params;
             
-            // Check if quotation exists
-            const [existing] = await pool.query('SELECT id FROM quotations WHERE id = ?', [id]);
-            if (existing.length === 0) {
+            const quotationModel = new QuotationModel();
+            
+            const exists = await quotationModel.checkQuotationExists(id);
+            if (!exists) {
                 return res.status(404).json({
                     success: false,
                     message: 'Quotation not found'
                 });
             }
             
-            const connection = await pool.getConnection();
-            try {
-                await connection.beginTransaction();
-                
-                // Delete quotation items first (foreign key constraint)
-                await connection.query('DELETE FROM quotation_items WHERE quotation_id = ?', [id]);
-                
-                // Delete quotation
-                await connection.query('DELETE FROM quotations WHERE id = ?', [id]);
-                
-                await connection.commit();
-                
-                res.status(200).json({
-                    success: true,
-                    message: 'Quotation deleted successfully'
-                });
-            } catch (error) {
-                await connection.rollback();
-                throw error;
-            } finally {
-                connection.release();
-            }
+            await quotationModel.deleteQuotationWithTransaction(id);
+            
+            res.status(200).json({
+                success: true,
+                message: 'Quotation deleted successfully'
+            });
         } catch (error) {
             console.error('Error deleting quotation:', error);
             res.status(500).json({
@@ -365,7 +248,6 @@ class QuotationController {
         }
     }
     
-    // Additional utility method to update quotation status
     async updateQuotationStatus(req, res) {
         try {
             const { id } = req.params;
@@ -379,10 +261,17 @@ class QuotationController {
                 });
             }
             
-            await pool.query(
-                'UPDATE quotations SET status = ?, updated_at = NOW() WHERE id = ?',
-                [status, id]
-            );
+            const quotationModel = new QuotationModel();
+            
+            const exists = await quotationModel.checkQuotationExists(id);
+            if (!exists) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Quotation not found'
+                });
+            }
+            
+            await quotationModel.updateQuotationStatus(id, status);
             
             res.status(200).json({
                 success: true,

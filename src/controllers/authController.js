@@ -16,7 +16,7 @@ const login = async (req, res) => {
             });
         }
         
-        // Query user from USERS table (not employees)
+    
         const [users] = await pool.query(
             'SELECT * FROM users WHERE email = ? AND is_active = 1',
             [email]
@@ -33,15 +33,13 @@ const login = async (req, res) => {
         
         const user = users[0];
         
-        // Compare password
         let isValidPassword = false;
         
-        // Check if password is bcrypt hash
         if (user.password && user.password.startsWith('$2a$')) {
             isValidPassword = await bcrypt.compare(password, user.password);
             console.log('Bcrypt comparison result:', isValidPassword);
         } else {
-            // Plain text password
+            
             isValidPassword = (password === user.password);
             console.log('Plain text comparison result:', isValidPassword);
         }
@@ -53,10 +51,9 @@ const login = async (req, res) => {
             });
         }
         
-        // Update last login
+
         await pool.query('UPDATE users SET last_login = NOW() WHERE id = ?', [user.id]);
         
-        // Generate token
         const token = jwt.sign(
             { 
                 id: user.id, 
@@ -123,7 +120,6 @@ const getProfile = async (req, res) => {
     }
 };
 
-// Debug function to see users
 const debugUsers = async (req, res) => {
     try {
         const [users] = await pool.query('SELECT id, user_id, name, email, role, password FROM users');

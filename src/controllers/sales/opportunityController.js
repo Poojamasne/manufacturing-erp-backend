@@ -1,4 +1,5 @@
 const pool = require('../../config/database');
+const OpportunityModel = require('../../models/sales/opportunityModel');
 
 class OpportunityController {
     async createOpportunity(req, res) {
@@ -13,28 +14,34 @@ class OpportunityController {
                 });
             }
             
-            // Generate opportunity ID
-            const [lastOpp] = await pool.query('SELECT opp_id FROM opportunities ORDER BY id DESC LIMIT 1');
-            let oppId = 'OP001';
-            if (lastOpp.length > 0) {
-                const num = parseInt(lastOpp[0].opp_id.substring(2)) + 1;
-                oppId = 'OP' + num.toString().padStart(3, '0');
-            }
+            const opportunityModel = new OpportunityModel();
             
-            const [result] = await pool.query(
-                `INSERT INTO opportunities (opp_id, lead_id, company_name, contact_person, phone, email,
-                    value, stage, priority, source, expected_close_date, assigned_to, created_by, notes, status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active')`,
-                [oppId, lead_id || null, company_name, contact_person || null, phone || null,
-                 email || null, value || 0, stage || 'Discovery', priority || 'Medium',
-                 source || null, expected_close_date || null, assigned_to || null,
-                 req.user.id, notes || null]
+            // Generate opportunity ID
+            const oppId = await opportunityModel.generateOpportunityId();
+            
+            const result = await opportunityModel.createOpportunity(
+                {
+                    oppId,
+                    lead_id,
+                    company_name,
+                    contact_person,
+                    phone,
+                    email,
+                    value,
+                    stage,
+                    priority,
+                    source,
+                    expected_close_date,
+                    assigned_to,
+                    notes
+                },
+                req.user.id
             );
             
             res.status(201).json({
                 success: true,
                 message: 'Opportunity created successfully',
-                data: { opp_id: oppId, id: result.insertId }
+                data: { opp_id: result.oppId, id: result.insertId }
             });
         } catch (error) {
             console.error('Error creating opportunity:', error);
@@ -50,51 +57,10 @@ class OpportunityController {
         try {
             const { stage, status, search, page = 1, limit = 10 } = req.query;
             
-            let query = `
-                SELECT 
-                    o.*,
-                    u.name as assigned_to_name,
-                    u2.name as created_by_name
-                FROM opportunities o
-                LEFT JOIN users u ON o.assigned_to = u.id
-                LEFT JOIN users u2 ON o.created_by = u2.id
-                WHERE 1=1
-            `;
-            const params = [];
+            const opportunityModel = new OpportunityModel();
             
-            if (stage && stage !== 'All') {
-                query += ` AND o.stage = ?`;
-                params.push(stage);
-            }
-            if (status && status !== 'All') {
-                query += ` AND o.status = ?`;
-                params.push(status);
-            }
-            if (search) {
-                query += ` AND (o.company_name LIKE ? OR o.opp_id LIKE ?)`;
-                const searchTerm = `%${search}%`;
-                params.push(searchTerm, searchTerm);
-            }
-            
-            query += ` ORDER BY o.created_at DESC LIMIT ? OFFSET ?`;
-            params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
-            
-            const [opportunities] = await pool.query(query, params);
-            
-            // Get total count without pagination
-            let countQuery = 'SELECT COUNT(*) as total FROM opportunities WHERE 1=1';
-            const countParams = [];
-            
-            if (stage && stage !== 'All') {
-                countQuery += ` AND stage = ?`;
-                countParams.push(stage);
-            }
-            if (status && status !== 'All') {
-                countQuery += ` AND status = ?`;
-                countParams.push(status);
-            }
-            
-            const [countResult] = await pool.query(countQuery, countParams);
+            const opportunities = await opportunityModel.getAllOpportunities(stage, status, search, page, limit);
+            const total = await opportunityModel.getOpportunitiesCount(stage, status);
             
             res.status(200).json({
                 success: true,
@@ -114,27 +80,16 @@ class OpportunityController {
         try {
             const { id } = req.params;
             
-            const [opportunities] = await pool.query(
-                `SELECT 
-                    o.*,
-                    u.name as assigned_to_name,
-                    u2.name as created_by_name
-                 FROM opportunities o
-                 LEFT JOIN users u ON o.assigned_to = u.id
-                 LEFT JOIN users u2 ON o.created_by = u2.id
-                 WHERE o.id = ?`,
-                [id]
-            );
+            const opportunityModel = new OpportunityModel();
+            const opportunity = await opportunityModel.getOpportunityById(id);
             
-            if (opportunities.length === 0) {
+            if (!opportunity) {
                 return res.status(404).json({
                     success: false,
                     message: 'Opportunity not found'
                 });
             }
             
-            // Format dates properly
-            const opportunity = opportunities[0];
             if (opportunity.expected_close_date) {
                 opportunity.expected_close_date = opportunity.expected_close_date.toISOString().split('T')[0];
             }
@@ -185,26 +140,26 @@ class OpportunityController {
                 });
             }
             
-            params.push(id);
-            await pool.query(
-                `UPDATE opportunities SET ${updateFields.join(', ')}, updated_at = NOW() WHERE id = ?`,
-                params
-            );
+            const opportunityModel = new OpportunityModel();
             
-            // Get updated opportunity
-            const [updated] = await pool.query(
-                `SELECT o.*, u.name as assigned_to_name, u2.name as created_by_name
-                 FROM opportunities o
-                 LEFT JOIN users u ON o.assigned_to = u.id
-                 LEFT JOIN users u2 ON o.created_by = u2.id
-                 WHERE o.id = ?`,
-                [id]
-            );
+            
+            const exists = await opportunityModel.checkOpportunityExists(id);
+            if (!exists) {
+                return res.status(404).json({
+                    success: false,
+                    message: 'Opportunity not found'
+                });
+            }
+            
+            await opportunityModel.updateOpportunity(id, updateFields, params);
+            
+           
+            const updatedOpportunity = await opportunityModel.getUpdatedOpportunity(id);
             
             res.status(200).json({
                 success: true,
                 message: 'Opportunity updated successfully',
-                data: updated[0]
+                data: updatedOpportunity
             });
         } catch (error) {
             console.error('Error updating opportunity:', error);
@@ -220,16 +175,17 @@ class OpportunityController {
         try {
             const { id } = req.params;
             
-            // Check if opportunity exists
-            const [existing] = await pool.query('SELECT id FROM opportunities WHERE id = ?', [id]);
-            if (existing.length === 0) {
+            const opportunityModel = new OpportunityModel();
+            
+            const exists = await opportunityModel.checkOpportunityExists(id);
+            if (!exists) {
                 return res.status(404).json({
                     success: false,
                     message: 'Opportunity not found'
                 });
             }
             
-            await pool.query('DELETE FROM opportunities WHERE id = ?', [id]);
+            await opportunityModel.deleteOpportunity(id);
             
             res.status(200).json({
                 success: true,

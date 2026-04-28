@@ -4,20 +4,20 @@ const bcrypt = require('bcryptjs');
 class AuthModel {
     static async findByEmail(email) {
         try {
-            console.log('🔍 AuthModel.findByEmail - Searching for:', email);
+            console.log('AuthModel.findByEmail - Searching for:', email);
             const [rows] = await pool.query(
                 'SELECT * FROM employees WHERE email = ? AND is_active = 1',
                 [email]
             );
-            console.log('📊 Query result rows:', rows.length);
+            console.log('Query result rows:', rows.length);
             if (rows.length > 0) {
-                console.log('✅ User found:', rows[0].email, 'Role:', rows[0].role);
+                console.log('User found:', rows[0].email, 'Role:', rows[0].role);
             } else {
-                console.log('❌ No user found with email:', email);
+                console.log('No user found with email:', email);
             }
             return rows[0] || null;
         } catch (error) {
-            console.error('❌ Error finding user:', error);
+            console.error('Error finding user:', error);
             throw error;
         }
     }
@@ -41,7 +41,7 @@ class AuthModel {
                 'UPDATE employees SET last_login = NOW() WHERE id = ?',
                 [id]
             );
-            console.log('✅ Last login updated for user ID:', id);
+            console.log('Last login updated for user ID:', id);
         } catch (error) {
             console.error('Error updating last login:', error);
         }
@@ -49,14 +49,14 @@ class AuthModel {
 
     static async verifyPassword(plainPassword, hashedPassword) {
         try {
-            console.log('🔐 Verifying password...');
+            console.log(' Verifying password...');
             console.log('   Plain password length:', plainPassword.length);
             console.log('   Hashed password length:', hashedPassword.length);
             const isValid = await bcrypt.compare(plainPassword, hashedPassword);
-            console.log('   Password verification result:', isValid ? 'SUCCESS ✅' : 'FAILED ❌');
+            console.log('   Password verification result:', isValid ? 'SUCCESS ' : 'FAILED ');
             return isValid;
         } catch (error) {
-            console.error('❌ Error verifying password:', error);
+            console.error('Error verifying password:', error);
             return false;
         }
     }
